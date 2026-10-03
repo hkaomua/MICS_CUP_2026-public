@@ -1,0 +1,29 @@
+# Allow only the edited applications, evaluation files, and public documentation.
+/*
+!/.gitignore
+!/README.md
+!/Nescity_CPU/
+!/Nescity_FPGA/
+/Nescity_CPU/*
+!/Nescity_CPU/8bitworkshop/
+!/Nescity_CPU/eval/
+/Nescity_CPU/8bitworkshop/*
+!/Nescity_CPU/8bitworkshop/nescity.c
+/Nescity_FPGA/*
+!/Nescity_FPGA/src/
+!/Nescity_FPGA/eval/
+/Nescity_FPGA/src/*
+!/Nescity_FPGA/src/cart/
+/Nescity_FPGA/src/cart/*
+!/Nescity_FPGA/src/cart/city_accelerator_nowater.v
+.DS_Store
+*.swp
+*.swo
+__pycache__/
+# Generated evaluation files can remain local when switching to baseline main.
+.build/
+build/
+.tools/
+/Nescity_FPGA/eval/slides/template/fonts/*
+!/Nescity_FPGA/eval/slides/template/fonts/README.md
+!/Nescity_FPGA/eval/slides/template/fonts/OFL.txt
