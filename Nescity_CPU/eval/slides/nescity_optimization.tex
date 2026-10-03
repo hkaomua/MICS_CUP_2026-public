@@ -1,0 +1,417 @@
+% !TeX program = xelatex
+% Evidence: benchmarked source revision 1756db3. See README.md and talk_notes.md.
+\documentclass[aspectratio=169,14pt]{beamer}
+\geometry{paperwidth=320mm,paperheight=180mm}
+\usepackage{lmodern}
+\usepackage{fontspec,xeCJK,booktabs,array,amsmath,pgfplots,listings}
+\pgfplotsset{compat=1.18}
+\setmainfont{texgyreheros-regular.otf}[BoldFont=texgyreheros-bold.otf,ItalicFont=texgyreheros-italic.otf]
+\setsansfont{texgyreheros-regular.otf}[BoldFont=texgyreheros-bold.otf,ItalicFont=texgyreheros-italic.otf]
+\setmonofont{lmmono10-regular.otf}
+\setCJKmainfont{HaranoAjiGothic-Regular.otf}[BoldFont=HaranoAjiGothic-Bold.otf]
+\setCJKsansfont{HaranoAjiGothic-Regular.otf}[BoldFont=HaranoAjiGothic-Bold.otf]
+\setCJKmonofont{HaranoAjiGothic-Regular.otf}
+\definecolor{ink}{HTML}{182C40}
+\definecolor{accent}{HTML}{007F86}
+\definecolor{muted}{HTML}{586A78}
+\definecolor{paper}{HTML}{FAFBFC}
+\definecolor{rule}{HTML}{CCD5DE}
+\definecolor{bright}{HTML}{70E2D1}
+\setbeamercolor{normal text}{fg=ink,bg=paper}
+\setbeamercolor{frametitle}{fg=ink}
+\setbeamercolor{structure}{fg=accent}
+\setbeamercolor{alerted text}{fg=accent}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{itemize item}{\small\textbullet}
+\setbeamertemplate{itemize subitem}{\small\textbullet}
+\setbeamersize{text margin left=20mm,text margin right=20mm}
+\setbeamerfont{normal text}{size=\fontsize{23}{34}\selectfont}
+\setbeamerfont{frametitle}{size=\fontsize{33}{40}\selectfont,series=\bfseries}
+\setbeamerfont{itemize/enumerate body}{size=\fontsize{23}{34}\selectfont}
+\setbeamertemplate{frametitle}{\vspace{9mm}\insertframetitle\par\vspace{5mm}}
+\setbeamertemplate{footline}{\hfill{\color{muted}\fontsize{12}{14}\selectfont\insertframenumber\,/\,\inserttotalframenumber}\hspace{20mm}\vspace{5mm}}
+\newcommand{\source}[1]{\vfill\par{\color{muted}\fontsize{12}{16}\selectfont 出典：#1\par}}
+\newcommand{\bigline}[1]{{\fontsize{31}{42}\selectfont\bfseries #1\par}}
+\newcommand{\gap}{\par\vspace{4mm}}
+\newcommand{\smallbody}{\fontsize{19}{28}\selectfont}
+\newcommand{\code}[1]{{\ttfamily\fontsize{19}{27}\selectfont #1}}
+\renewcommand{\arraystretch}{1.12}
+\lstset{basicstyle=\ttfamily\fontsize{19}{26}\selectfont,columns=fullflexible,keepspaces=true,showstringspaces=false,keywordstyle=\color{accent},commentstyle=\color{muted},breaklines=true,frame=none,aboveskip=3mm,belowskip=3mm}
+\hypersetup{pdftitle={Nescity CPU高速化 配布版比70.615倍のCPUサイクル評価},pdfauthor={},pdfsubject={6502最適化と実機なしの評価},pdfkeywords={Nescity,6502,最適化,MICS,Beamer}}
+\begin{document}
+\fontsize{23}{34}\selectfont
+
+{\setbeamercolor{normal text}{fg=white,bg=ink}
+\begin{frame}[plain]
+\color{white}
+\vspace{9mm}
+{\fontsize{23}{30}\selectfont MICS 2026 CPU部門}\par\vspace{12mm}
+{\fontsize{48}{59}\selectfont\bfseries Nescity CPUの高速化}\par
+\gap
+{\fontsize{28}{40}\selectfont 6502と2 KiB RAMで、\par 計算結果を保ったまま処理時間を削減}\par
+\vspace{12mm}
+{\color{bright}\fontsize{72}{80}\selectfont\bfseries 70.615\,倍}
+\hspace{8mm}{\fontsize{21}{30}\selectfont 配布版比・CPUサイクル比}\par
+\vfill
+{\fontsize{15}{22}\selectfont 初期配置から1280世代の実ROM命令をCPUシミュレーションで比較\par
+評価対象：\texttt{1756db3}　　評価日：2026年9月6日}
+\end{frame}}
+
+\begin{frame}{通常版から計算サイクルを98.58\%削減}
+\bigline{42,361,551 \quad と \quad 599,899}
+{\color{muted}通常版と最終版の平均6502サイクル／世代}\par
+\gap
+\begin{tabular}{@{}lrr@{}}
+\toprule
+ & 通常版 & 最終版\\\midrule
+1280世代の合計 & 54,222,785,215 & 767,870,293\\
+通常版に対する速度 & 1.00倍 & \textcolor{accent}{\bfseries 70.615倍}\\
+\bottomrule
+\end{tabular}
+\gap
+測定範囲は\texttt{sim\_step}の先頭からRTSまで。\par
+呼出元JSR・CRC・描画・フレーム待ち・NMIは含めない。\par
+{\color{accent}\bfseries 実機の画面更新が70.615倍という意味ではない。}
+\source{eval/RESULTS.md（1756db3）。倍率は同一条件で再ビルドしたROMの比較。}
+\end{frame}
+
+\begin{frame}{対象は960セルの街シミュレーション}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{0.50\textwidth}
+32列 $\times$ 30行、セル値は0～100\par
+5 $\times$ 5近傍から次の状態を求める\par
+\gap
+\begin{itemize}\setlength{\itemsep}{5mm}
+\item 上下左右は周期境界
+\item 海の値0は固定
+\item 全セルを同時に更新
+\end{itemize}
+\end{column}
+\begin{column}{0.43\textwidth}
+{\bfseries 近傍の重み}\par\vspace{4mm}
+{\renewcommand{\arraystretch}{0.85}\fontsize{23}{26}\selectfont
+$\begin{bmatrix}1&2&3&2&1\\2&3&4&3&2\\3&4&5&4&3\\2&3&4&3&2\\1&2&3&2&1\end{bmatrix}$}\par\gap
+$w=5-|dx|-|dy|$\par
+重みの合計は65
+\end{column}
+\end{columns}
+\source{通常版 nescity.c（baseline）、linux\_city.c。水不足の自動計算は配布版同様に無効。}
+\end{frame}
+
+\begin{frame}{編集範囲とメモリの制約}
+\begin{tabular}{@{}p{0.28\textwidth}p{0.66\textwidth}@{}}
+\toprule
+対象 & CPU部門の6502プログラム\\
+既存ファイルの変更 & \texttt{8bitworkshop/nescity.c} のみ\\
+追加したもの & \texttt{eval/} のビルド・評価・記録\\
+内部RAM & 2 KiB。カートリッジRAMに依存しない\\
+PRG ROM & 32 KiB。計算用の表もこの範囲に置く\\
+FPGA & 回路・\texttt{.sof}は変更しない\\
+\bottomrule
+\end{tabular}
+\gap
+{\bfseries 速さと同時に、ROM・RAM・スタックを確認する。}
+\source{配布README、Nescity\_CPU/README.txt、eval/README.md、neslib2.cfg。編集範囲の判断は同梱資料に基づく。}
+\end{frame}
+
+\begin{frame}[fragile]{通常版はセルごとに25近傍を集計}
+\begin{lstlisting}[language=C]
+for (each output cell) {
+    for (dy = -2; dy <= 2; ++dy)
+        for (dx = -2; dx <= 2; ++dx) {
+            // wrap coordinates, read cell, classify
+            // accumulate weighted population and force
+        }
+    // divide, apply local rules, clamp next value
+}
+\end{lstlisting}
+\gap
+隣のセルへ進んでも、重なる近傍を再び読む。\par
+乗除算、座標変換、分類、16ビット演算が繰り返される。
+\source{通常版 nescity.c（baseline）。掲載コードは処理構造を示す疑似コード。}
+\end{frame}
+
+\begin{frame}{段階ごとの速度向上}
+\begin{tikzpicture}
+\begin{axis}[
+width=0.74\textwidth,height=91mm,xbar,bar width=7mm,
+xmin=0,xmax=85,xtick={0,10,20,30,40,50,60,70,80},
+ytick={1,2,3,4,5,6,7},yticklabels={配布版,ROM表とZP,列集計と除算削減,6502向け実装,山の早期判定,住宅数再利用・集計先送り,ループ・コピー・レジスタ},
+y dir=reverse,ymin=0.4,ymax=7.6,
+axis x line*=bottom,axis y line*=left,axis line style={rule},
+xmajorgrids=true,grid style={rule!50},tick style={draw=none},
+xlabel={通常版に対する速度倍率},
+tick label style={font=\fontsize{17}{23}\selectfont},xlabel style={font=\fontsize{17}{23}\selectfont},
+nodes near coords,point meta=explicit symbolic,every node near coord/.append style={font=\fontsize{19}{25}\selectfont,anchor=west,color=ink},
+]
+\addplot[fill=accent,draw=none] coordinates {(1,1) [1.000倍] (5.216,2) [5.216倍] (11.668,3) [11.668倍] (51.805,4) [51.805倍] (56.989,5) [56.989倍] (65.068,6) [65.068倍] (70.615,7) [70.615倍]};
+\end{axis}
+\end{tikzpicture}
+\par{\smallbody 複数の変更をまとめた各版のCPUシミュレーション値。個々の工夫だけの寄与率ではない。}
+\source{各コミットのeval/RESULTS.md：7f2c8ae、453dfb1、63e14f3、eb9c478、07b8126、1756db3。1280世代平均。}
+\end{frame}
+
+\begin{frame}{工夫1：重み付き集計を5列ずつ再利用}
+\bigline{$5-|dx|-|dy|=(3-|dy|)+(2-|dx|)$}
+\gap
+縦の重み $1,2,3,2,1$ で各列を集計し、5列を保存。\par
+中央3列には、列の単純和を $1,2,1$ 倍して加える。\par
+右へ1セル進むと、左端を除いて右端の1列だけを追加する。
+\gap
+\begin{tabular}{@{}lrr@{}}
+\toprule
+32セルをすべて集計する基本例 & 通常版 & 列の再利用\\\midrule
+近傍集計に取り込むセル数 & $32\times25=800$ & $25+31\times5=180$\\
+\bottomrule
+\end{tabular}
+\gap
+{\smallbody 草原の影響力は重みに関係なく2。横方向の追加係数を0にして、この例外を保持する。}
+\source{nescity.c、eval/README.md。表は基本方式の論理的な集計対象数。追加読出しは含まない。最新版は固定セル区間の列集計を先送りする。}
+\end{frame}
+
+\begin{frame}{工夫2：有限の整数計算をROM表に置換}
+\begin{tabular}{@{}p{0.25\textwidth}p{0.41\textwidth}r@{}}
+\toprule
+計算 & 入力範囲と保存する値 & 最終版の表\\\midrule
+平均人口の /65 & 重み付き人口和0～6500の商 & 6501 B\\
+影響力の /20 & 影響力 $-130$～195に対応する差分 & 326 B\\
+過密度の /3 と4倍 & 平均人口0～100に対応する損失 & 101 B\\
+\bottomrule
+\end{tabular}
+\gap
+負数の除算は、通常版と同じゼロ方向への丸め。\par
+全6501入力と、各変換表の全要素を検査する。\par
+\gap
+{\bfseries 世代更新の主要15関数から、汎用の乗除算・剰余呼び出しを除去。}
+\source{nescity.c、eval/rom\_runner.c、eval/verify.py。初期化・数字描画はこの検査対象外。}
+\end{frame}
+
+\begin{frame}[fragile]{工夫3：6502が扱いやすい値と配列}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{0.56\textwidth}
+\begin{itemize}\setlength{\itemsep}{5mm}
+\item 影響力に重み1あたり2を加え、列の集計を8ビット化
+\item 計算用変数をゼロページに配置
+\item 16ビット値の下位・上位を別配列にし、添字の2倍計算を省く
+\end{itemize}
+\end{column}
+\begin{column}{0.39\textwidth}
+{\bfseries 中央3列の影響力}\par
+\begin{lstlisting}
+ldx row_slot
+lda col_force+2,x
+asl a
+adc col_force+1,x
+adc col_force+3,x
+adc window_force
+\end{lstlisting}
+{\smallbody 先頭3列の値を複製し、循環配列を固定オフセットで読む。}
+\end{column}
+\end{columns}
+\source{nescity.c（1756db3）。右はインラインアセンブリを読みやすく表記。全近傍の加算バイアス130は変換表で相殺。}
+\end{frame}
+
+\begin{frame}{工夫4：結果が確定した計算を省略}
+\begin{tabular}{@{}p{0.47\textwidth}p{0.47\textwidth}@{}}
+\toprule
+判定できる条件 & 省ける処理\\\midrule
+平均補正前の差分が $-4$ 以下 & 平均は最大でも $+1$。最終差分は必ず $-3$\\
+値1の山で、近傍の住宅が2未満 & 成長しないため、影響力計算前に値1と確定\\
+入る列と出る列が同じ一様列 & 窓全体の集計値の更新\\
+交換する列の分類別個数が同じ & その分類のカウンタ演算・書込み\\
+\bottomrule
+\end{tabular}
+\gap
+{\bfseries 数値の範囲から正しさを示せる場合だけ省略する。}\par
+特定の初期配置や世代数に依存する判定は使わない。
+\source{nescity.c。山の条件の証明は付録A。最大成長+1、最大衰退-3など配布版の定数を前提とする。}
+\end{frame}
+
+\begin{frame}{追加の高速化：住宅数を再利用し、集計を先送り}
+\begin{itemize}\setlength{\itemsep}{5mm}
+\item 縦5セルの住宅数を32列分保持する。端の複製を含め36 B
+\item 次の行では、抜ける旧行を引き、入る旧行を足す
+\item 海と住宅2未満の山では、重い列集計を先送りする
+\item 次の対象まで5列未満なら再利用、5列以上なら5列を再構成
+\item 列集計の初期化は世代開始時だけ。海だけの行でも住宅数は更新
+\end{itemize}
+\source{eval/README.md、07b8126のRESULTS.md。書き戻し前に住宅数を更新し、下端では保存した旧先頭行を参照。}
+\end{frame}
+
+\begin{frame}{追加の高速化：世代ループとレジスタ保持}
+\smallbody
+\begin{tabular}{@{}p{0.72\textwidth}r@{}}
+\toprule
+順次適用した変更 & 平均サイクル／世代\\\midrule
+直前版07b8126 & 651,037\\
+世代ループを6502化、32 Bコピーを8 Bずつ展開 & 624,641\\
+横位置をYに保持、固定セルのRAM更新・再読出しを削減 & 610,968\\
+人口和上位バイトをXに保持し、繰り上がり時だけ加算 & 599,899\\\bottomrule
+\end{tabular}
+\gap
+旧先頭2行の保存、2行遅れの書き戻し、最後の2行の順序を維持。\par
+各試作を1280世代の全セルで参照モデルと照合した。\par\gap
+\textbf{複数変更の逐次比較であり、独立した手法の寄与率ではない。}
+\source{eval/RESULTS.md（1756db3）。人口和は16ビットを維持。標準6502命令を使用。}
+\end{frame}
+
+\begin{frame}{ROMを使い、RAMとスタックを守る}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+資源 & 通常版 & 最終版 & 容量・状態\\\midrule
+PRGの使用量 & 13,155 B & 20,702 B & 32,768 B枠\\
+ゼロページ & 60 B & 229 B & 256 B枠\\
+DATA + BSS & 1,260 B & 1,208 B & \texttt{\$0300..\$07FF}\\
+Cスタックとの最小余裕 & 10 B & 60 B & 実行中に監視\\
+\bottomrule
+\end{tabular}
+\gap
+盤面960 Bに、次世代3行96 Bと先頭の旧2行64 Bを組み合わせる。\par
+全盤面を二重に持たず、同時更新と周期境界を維持する。\par
+\gap
+{\smallbody FPGA回路は変更していない。LE・FF・BRAM使用率とタイミング収束は未測定。}
+\source{eval/RESULTS.md、リンカのmap、rom\_runner.c。ゼロページも2 KiB内部RAMの一部であり、別の追加RAMではない。}
+\end{frame}
+
+\begin{frame}{実機なしで使う評価環境}
+\smallbody
+\begin{tabular}{@{}p{0.23\textwidth}p{0.34\textwidth}p{0.35\textwidth}@{}}
+\toprule
+工程 & 入力・方法 & 確認するもの\\\midrule
+ビルド & 固定したcc65とNESランタイム & 同じフラグで3版のROMを生成\\
+CPU実行 & 未改変のsim65 6502コア & 実ROM命令のサイクル、RAMアクセス\\
+正解との比較 & 同梱linux\_city.cをホストで実行 & 各世代の全960セル\\
+起動試験 & リセット、簡易PPU、周期NMI & 初期化、CRC、5世代の再描画\\
+資源検査 & map・実行時スタック監視 & 容量超過と静的データとの衝突\\
+\bottomrule
+\end{tabular}
+\source{eval/build.py、reference.c、rom\_runner.c、verify.py。3版はbaseline・07b8126・1756db3。PPUは完全な描画エミュレータではない。}
+\end{frame}
+
+\begin{frame}{最終版の検証結果}
+\bigline{初期状態を含む1281盤面の全セルが一致}
+\gap
+\begin{itemize}\setlength{\itemsep}{4mm}
+\item 配布版・07b8126・1756db3の各ROMを比較
+\item 最終版で追加279配置を各2世代検証
+\item 全6501入力の /65 と、326・101要素の表を全数検査
+\item 起動・NMI・CRC・再描画と、RAM／スタック検査を通過
+\end{itemize}
+\gap
+{\smallbody 既知CRCの例：初期 \texttt{37C2}、5世代 \texttt{D764}、1280世代 \texttt{1FC3}}\par
+{\smallbody 追加配置は一様値・周期境界・乱数・山の境界に加え、集計の先送りと人口和の繰り上がりを検査。}
+\source{eval/RESULTS.md、verify.py。全配置の数学的な網羅証明ではなく、参照比較と境界試験の結果。}
+\end{frame}
+
+\begin{frame}{倍率は盤面と測定区間に依存する}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+付属初期配置・最新版 & 平均サイクル／世代 & 配布版比\\\midrule
+1280世代 & 599,899 & 70.615倍\\
+初期5世代 & 997,556 & 41.686倍\\\bottomrule
+\end{tabular}
+\gap
+初期5世代も直前版から6.45\%高速化。\par
+旧57倍版の初期平均1,012,976サイクルよりも速い。\par\gap
+測定した1280世代では各世代とも直前版より速く、1.064～1.099倍。\par
+\textbf{任意の盤面で同じ倍率になるという保証はない。}
+\source{eval/RESULTS.md（1756db3）。初期5世代の合計は5,309,703から4,987,782へ削減。実機FPSは未測定。}
+\end{frame}
+
+\begin{frame}{計測と比較を繰り返す開発}
+\smallbody
+\begin{tabular}{@{}rlp{0.64\textwidth}@{}}
+\toprule
+1 & 保存 & 制約を確認し、通常版を\texttt{baseline}タグで保存\\
+2 & 評価環境 & ROMビルド、参照モデル、CPU実行器を先に準備\\
+3 & 仮説 & サイクル内訳と生成アセンブリから重い処理を特定\\
+4 & 実装 & 再利用、表引き、8ビット化、命令列を順に変更\\
+5 & 検証 & 短縮試験で誤りを直し、1280世代と追加配置で確認\\
+6 & 記録 & 速度・容量・未達目標を残し、検証済み版をコミット\\
+\bottomrule
+\end{tabular}
+\gap
+{\smallbody cc65と8bitworkshopをコミット固定。同じ条件で通常版を再ビルドして比較した。}
+\source{Git履歴、eval/bootstrap.py、build.py、verify.py、各版のRESULTS.md。}
+\end{frame}
+
+\begin{frame}{70.615倍時点の処理内訳と試作比較}
+\smallbody
+\begin{columns}[T,onlytextwidth]
+\begin{column}{0.42\textwidth}
+\begin{tabular}{@{}lr@{}}
+\toprule
+最終版の自己サイクル & 割合\\\midrule
+列集計 & \textcolor{accent}{\bfseries 51.60\%}\\
+セル更新 & 21.24\%\\
+行ループ & 14.50\%\\
+住宅数の行送り & 5.46\%\\
+固定長コピー & 2.20\%\\
+その他 & 5.00\%\\\bottomrule
+\end{tabular}
+\end{column}
+\begin{column}{0.53\textwidth}
+\textbf{直前版から1.085倍}\par\gap
+速度向上8.52\%、サイクル削減7.85\%。\par
+旧資料のeb9c478からは1.239倍。\par\gap
+63e14f3から追加2倍という目標には未達。\par
+最新版までの改善は約1.363倍。
+\end{column}
+\end{columns}
+\gap
+分類ID差分更新案：651,929サイクル／世代。\par
+比較対象07b8126の651,037より遅く、不採用。
+\source{eval/RESULTS.md（1756db3）、profile.py。割合は呼出し先を除く自己サイクル。目標の起点は63e14f3。}
+\end{frame}
+
+\begin{frame}{得られた結果と開発上の要点}
+\bigline{CPUサイクル比で配布版の70.615倍}
+\gap
+\begin{itemize}\setlength{\itemsep}{7mm}
+\item 重なる計算を再利用し、有限の演算を正確な表引きにした
+\item 6502の8ビット演算とメモリ配置に合わせて実装した
+\item 全セル比較と資源検査を、高速化の各段階で使った
+\end{itemize}
+\vfill
+{\color{accent}\bfseries 次の確認はFPGA実機での表示・処理速度。}\par
+{\smallbody 今回確認したのはCPU命令サイクルとソフトウェア資源。実機FPS、LE／FF／BRAM、タイミングは未評価。}
+\source{eval/RESULTS.md（1756db3）。初期配置から1280世代の平均。}
+\end{frame}
+
+\begin{frame}{付録A：住宅が2未満の山が成長しない理由}
+\smallbody
+{\smallbody 山は値1、住宅数は0または1とする。平均補正は最大$+1$、過密度補正は非正。}\par
+\gap
+\begin{tabular}{@{}p{0.23\textwidth}p{0.70\textwidth}@{}}
+\toprule
+海が4以上 & 中心が山なので影響力は最大170。影響力由来の差分は最大7。山$-4$、住宅不足$-3$、海$-2$で、合計は最大$-2$。\\
+海が3以下 & 中心の山を除き、基準を重みの2倍とすると合計110。これを超える海・住宅は最大4セル、各重みは最大4。影響力は$110+4\times4=126$以下。差分は最大5で、$5-4-3=-2$。\\
+\bottomrule
+\end{tabular}
+\gap
+どちらも平均補正を加えて最大$-1$。\par
+下限1への制限により、次の値は必ず1になる。
+\source{通常版のinfluence・局所ルール、最終版city\_finish\_cell。定数変更時はこの証明と実装を更新する。}
+\end{frame}
+
+\begin{frame}[fragile]{付録B：元の評価環境での再現}
+\smallbody
+元の非公開Git履歴と配布物を用意した環境で実行。\par
+\begin{lstlisting}
+python3 Nescity_CPU/eval/bootstrap.py
+python3 Nescity_CPU/eval/verify.py
+python3 Nescity_CPU/eval/profile.py
+\end{lstlisting}
+\gap
+\begin{tabular}{@{}ll@{}}
+\texttt{baseline} & 通常版の保存\\
+\texttt{7f2c8ae} & ROM表・ゼロページと評価基盤、5.216倍\\
+\texttt{453dfb1} & 列集計と除算削減、11.668倍\\
+\texttt{63e14f3} & インライン6502実装など、51.805倍\\
+\texttt{eb9c478} & 山の早期判定・固定添字など、56.989倍\\
+\texttt{07b8126} & 住宅数再利用・列集計の先送り、65.068倍\\
+\texttt{1756db3} & 世代ループ・コピー・レジスタ保持、70.615倍\\
+\end{tabular}
+\source{eval/README.md、各コミットのRESULTS.md。最終ROM：eval/build/optimized/nescity.nes。詳細な固定依存はbootstrap.py。}
+\end{frame}
+\end{document}
