@@ -1,32 +1,44 @@
 # Nescity CPU高速化の発表資料
 
-Beamer製、16:9、全21枚（本編19枚＋付録2枚）。約18分を想定し、発表時間は要リハーサル。
+FPGA版と同じ [hkaomua/slide-template](https://github.com/hkaomua/slide-template) のBeamerテーマを利用しています。
+短い見出しと、そのページで伝えたいことを一文で示す構成です。
+16:9、全9枚（**本編7枚・約5分＋質疑用の付録2枚**）。
 
-- `nescity_optimization.tex`: 編集用ソース。グラフ・表・数式もTeX内で編集可能
-- `talk_notes.md`: 発表時の補足、詳細資源量、検証条件、固定依存とSHA-256
-- `build.sh`: PDFの再生成
-- `output/pdf/nescity_optimization.pdf`: 1756db3／70.615倍の評価に合わせて公開用に再生成したPDF
+- [発表用PDF](output/pdf/nescity_optimization.pdf)
+- [発表原稿](talk_notes.md)
+- [編集用TeX](nescity_optimization.tex)
+- [テンプレートの取得元・ライセンス](template/README.md)
 
-## 測定対象
+本編は、表紙、課題、最適化2枚、評価2枚、検証です。
+開発経過と処理時間の内訳は付録にまとめました。
+末尾に[公開CPU実装PR #5](https://github.com/hkaomua/MICS_CUP_2026-public/pull/5)を案内しています。
 
-資料ソースは1756db3、2026年9月6日の[RESULTS.md](../RESULTS.md)に合わせています。今回の資料更新では性能測定を再実行していません。
+## 評価の範囲
 
-付属初期配置から1280世代の平均599,899サイクル、合計767,870,293サイクル。同一固定ツールチェーンで再ビルドした配布版（合計54,222,785,215）に対し70.615倍、サイクル削減98.58%です。比較する3版はbaseline・07b8126・1756db3。旧eb9c478は56.989倍の開発段階として残します。
+数値は [../RESULTS.md](../RESULTS.md) の2026年9月6日の検証記録に基づきます。
+付属配置から1,280世代の平均599,899サイクル、配布版比70.615倍です。
+実ROMの `sim_step` 先頭からRTSまでをCPUシミュレータで計測し、呼出元JSR・CRC・描画・フレーム待ち・NMIを除いています。
+実機FPSは未測定で、倍率は盤面に依存します。CPU版の実機動作も未検証です。
+今回の編集では性能測定を再実行せず、保存された結果を資料と原稿に反映しました。
 
-段階比較は7f2c8ae・453dfb1・63e14f3・eb9c478・07b8126・1756db3の各RESULTS.mdに基づきます。各版は複数変更を含み、棒の差は単独手法の独立した寄与率ではありません。
+## 再生成
 
-CPUシミュレーションで実ROMのsim_step先頭からRTSまでを測定した値です。呼出元JSR・CRC・描画・フレーム待ち・NMIを除きます。従来の6フレーム待ち・再描画頻度を維持し、実機FPSやアプリ全体の速度倍率とは区別します。倍率は盤面に依存し、初期5世代の配布版比は41.686倍です。
+初回は [LINE Seed公式サイト](https://seed.line.me/index_jp.html) から日本語版ZIPを取得して展開し、リポジトリのルートで次を実行します。
 
-実機表示・処理速度、QuartusのLE/FF/BRAM使用率、タイミング収束は未評価です。簡易PPUによる起動試験と、ソフトウェアROM・RAM・スタックの検査を区別します。
+```sh
+node Nescity_CPU/eval/slides/template/scripts/setup-fonts.mjs /path/to/LINESeedJP_20241105
+python3 -m venv Nescity_CPU/eval/build/slide-fonts-venv
+Nescity_CPU/eval/build/slide-fonts-venv/bin/python -m pip install fonttools==4.66.1
+Nescity_CPU/eval/build/slide-fonts-venv/bin/python Nescity_CPU/eval/slides/template/scripts/setup-uptex-fonts.py
+```
 
-## PDFの再生成
-
-リポジトリのルートで実行します。
+フォント本体・字幅データはGit対象外です。Windowsでは `bin/python` を `Scripts/python` に置き換えます。
+以降は次のコマンドでPDFを更新します。
 
 ```sh
 sh Nescity_CPU/eval/slides/build.sh
 ```
 
-XeLaTeXとbeamer・xeCJK・pgfplots・listings・lmodern、TeX Gyre Heros、原ノ味ゴシックが必要です。既存手順はTeX Live 2026で確認されたものです。中間ファイルはGit対象外のeval/build/slides/に出力し、PDFは配布用成果物としてGitに含めます。
-
-公開用の資料はTeX Live環境でPDFを再生成しています。旧Git履歴はPDF生成に不要です。
+upLaTeX・dvipdfmx・latexmk・pltotfと、beamer・otf・pxchfon・pxjahyper・ly1・TikZ・lmodern・colortbl・pgfplots・listingsが必要です。
+フォント設定にはNode.js・Python 3.9以上・fonttoolsを使います。TeX Live 2026でビルドし、全9ページを表示確認しています。
+中間ファイルは `eval/build/slides/uptex/` に出力します。CPU評価ツールや元の非公開Git履歴は資料のビルドに不要です。

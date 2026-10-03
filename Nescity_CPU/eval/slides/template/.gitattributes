@@ -1,0 +1,15 @@
+* text=auto
+*.md text eol=lf
+*.css text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.tex text eol=lf
+*.sty text eol=lf
+*.typ text eol=lf
+*.otf binary
+*.woff2 binary
+*.png binary
+*.pdf binary
+# Preserve the upstream font license text verbatim, including its line-end space.
+fonts/OFL.txt whitespace=-blank-at-eol
