@@ -1,19 +1,19 @@
 /***************************************************************************************************
- * city_accelerator_nowater.v -- simple 10 MHz contest/reference implementation
+ * city_accelerator_nowater.v -- 10 MHz line-buffered implementation for MAX 10
  *
  * Purpose
- *   A deliberately straightforward hardware implementation of the active nescity.c rule.
+ *   A resource-bounded hardware implementation of the active nescity.c rule.
  *   The CPU/MMIO side remains in the NES/cart clock domain (clk_cpu, nominally 100 MHz),
  *   while the simulation engine runs from a PLL-generated 10 MHz clock (clk_calc).
  *
- * Design philosophy
- *   - Keep the cell-update equations visibly close to the C source.
- *   - Use ordinary Verilog *, /, +, -, and if statements rather than hand-optimized
- *     shifts, lookup divisions, or long micro-optimized arithmetic FSMs.
- *   - Spend several 10 MHz clocks per cell so the design is not sensitive to a 100 MHz
- *     critical path.
- *   - Use a small toggle handshake for START/DONE clock-domain crossing.
- *   - Use a dual-clock true-dual-port RAM: calculator on port A, CPU on port B.
+ * Implementation
+ *   - Four old rows are stored in one 32 x 32 simple-dual-port M9K history.
+ *   - Fetch one new grid byte per column; retain five column summaries in FFs.
+ *   - Pipeline one arithmetic lane at one output every 10 MHz clock.
+ *   - Cache four prefix summaries; prefetch the next row during wraparound.
+ *   - Split the 2 KiB grid into two dual-clock banks, preserving CPU/MMIO.
+ *   - All byte inputs, torus boundaries, and C signed division remain exact.
+ *   See eval/README.md for verification and resource estimates.
  *
  * Current simulation rule (same as active nescity.c)
  *   - 32 x 30 grid, 8-bit cells
@@ -57,31 +57,11 @@ module city_accelerator_nowater
   output wire        busy_out
 );
 
-localparam integer W = 32;
-localparam integer H = 30;
-localparam integer N = 960;
-localparam integer WEIGHT_SUM = 65;
-
-localparam integer SEA                  = 0;
-localparam integer FORCE_THRESHOLD      = 20;
-localparam integer FORCE_SCALE          = 20;
-localparam integer MAX_RISE             = 1;
-localparam integer MAX_FALL             = 3;
-localparam integer DECLINE_STRENGTH     = 1;
-localparam integer NATURE_DECAY         = 1;
-localparam integer NATURE_RECOVERY      = 1;
-localparam integer CAPACITY_LIMIT       = 55;
-localparam integer CAPACITY_SCALE       = 3;
-localparam integer OVERCROWDING_DECAY   = 4;
-
 // Number of accelerator steps executed between screen redraws by the NES program.
 // 1..255 are returned directly from $7F03; 256 is encoded as 00h.
 localparam integer DISPLAY_STEP_INTERVAL = 256;
 localparam [7:0] DISPLAY_STEP_INTERVAL_CODE =
-    (DISPLAY_STEP_INTERVAL == 256) ? 8'h00 : DISPLAY_STEP_INTERVAL;
-
-localparam [10:0] GRID_BANK0_BASE = 11'd0;
-localparam [10:0] GRID_BANK1_BASE = 11'd960;
+    (DISPLAY_STEP_INTERVAL == 256) ? 8'h00 : DISPLAY_STEP_INTERVAL[7:0];
 
 // -------------------------------------------------------------------------------------------------
 // CPU / MMIO clock domain (clk_cpu)
@@ -120,50 +100,32 @@ assign cpu_claim = cpu_reg_sel || cpu_grid_sel;
 assign cpu_dout_oe = cpu_sel && cpu_re && cpu_claim;
 
 // -------------------------------------------------------------------------------------------------
-// Private grid RAM
-//   Port A: clk_calc, calculator
-//   Port B: clk_cpu, CPU grid window
+// Two physical 1024x8 banks, one M9K each. Both keep their fixed CPU and
+// calculator clocks. A source read and destination write can happen together;
+// no clock mux or third RAM port is needed. CPU indices remain 0..959.
 // -------------------------------------------------------------------------------------------------
-reg        calc_grid_we;
-reg [10:0] calc_grid_addr;
-reg [7:0]  calc_grid_din;
-wire [7:0] calc_grid_dout;
+reg source_bank_calc;
+wire calc_grid_we;
+wire [9:0] calc_grid_raddr, calc_grid_waddr;
+wire [7:0] calc_grid_din, calc_grid_dout;
+wire [7:0] calc_q0, calc_q1, cpu_q0, cpu_q1;
+wire cpu_grid_ram_we = cpu_grid_sel && cpu_we && !busy_cpu;
+wire [7:0] cpu_grid_ram_dout = active_bank_cpu ? cpu_q1 : cpu_q0;
+assign calc_grid_dout = source_bank_calc ? calc_q1 : calc_q0;
 
-wire       cpu_grid_ram_we;
-wire [10:0] cpu_grid_ram_addr;
-wire [7:0] cpu_grid_ram_dout;
-
-function [10:0] bank_base;
-  input bank;
-  begin
-    bank_base = bank ? GRID_BANK1_BASE : GRID_BANK0_BASE;
-  end
-endfunction
-
-function [10:0] bank_addr;
-  input bank;
-  input [9:0] index;
-  begin
-    bank_addr = bank_base(bank) + {1'b0, index};
-  end
-endfunction
-
-assign cpu_grid_ram_addr = bank_addr(active_bank_cpu, cpu_grid_index);
-assign cpu_grid_ram_we   = cpu_grid_sel && cpu_we && !busy_cpu;
-
-city_grid_dpram_dc #(.ADDR_WIDTH(11), .DATA_WIDTH(8)) city_grid_ram
-(
-  .clk_a  (clk_calc),
-  .we_a   (calc_grid_we),
-  .addr_a (calc_grid_addr),
-  .data_a (calc_grid_din),
-  .q_a    (calc_grid_dout),
-
-  .clk_b  (clk_cpu),
-  .we_b   (cpu_grid_ram_we),
-  .addr_b (cpu_grid_ram_addr),
-  .data_b (cpu_din),
-  .q_b    (cpu_grid_ram_dout)
+city_grid_dpram_dc #(.ADDR_WIDTH(10), .DATA_WIDTH(8)) grid_bank0 (
+  .clk_a(clk_calc), .we_a(calc_grid_we && source_bank_calc),
+  .addr_a(source_bank_calc ? calc_grid_waddr : calc_grid_raddr),
+  .data_a(calc_grid_din), .q_a(calc_q0),
+  .clk_b(clk_cpu), .we_b(cpu_grid_ram_we && !active_bank_cpu),
+  .addr_b(cpu_grid_index), .data_b(cpu_din), .q_b(cpu_q0)
+);
+city_grid_dpram_dc #(.ADDR_WIDTH(10), .DATA_WIDTH(8)) grid_bank1 (
+  .clk_a(clk_calc), .we_a(calc_grid_we && !source_bank_calc),
+  .addr_a(source_bank_calc ? calc_grid_raddr : calc_grid_waddr),
+  .data_a(calc_grid_din), .q_a(calc_q1),
+  .clk_b(clk_cpu), .we_b(cpu_grid_ram_we && active_bank_cpu),
+  .addr_b(cpu_grid_index), .data_b(cpu_din), .q_b(cpu_q1)
 );
 
 // -------------------------------------------------------------------------------------------------
@@ -269,429 +231,507 @@ always @(posedge clk_cpu or posedge reset) begin
 end
 
 // -------------------------------------------------------------------------------------------------
-// Simple 10 MHz calculator
+// Line-buffered 10 MHz calculator: one output cell every clock after filling.
 // -------------------------------------------------------------------------------------------------
-localparam [3:0] ST_IDLE       = 4'd0;
-localparam [3:0] ST_CELL_INIT  = 4'd1;
-localparam [3:0] ST_NEIGH_ADDR = 4'd2;
-localparam [3:0] ST_NEIGH_WAIT = 4'd3;
-localparam [3:0] ST_NEIGH_DATA = 4'd4;
-localparam [3:0] ST_AVG        = 4'd5;
-localparam [3:0] ST_BIAS       = 4'd6;
-localparam [3:0] ST_DELTA      = 4'd7;
-localparam [3:0] ST_NEW_VALUE  = 4'd8;
-localparam [3:0] ST_WRITE      = 4'd9;
-localparam [3:0] ST_FINISH     = 4'd10;
-
-reg [3:0] calc_state;
-
-// START synchronizer.
-reg start_toggle_sync1;
-reg start_toggle_sync2;
-reg start_toggle_seen_calc;
-reg start_bank_sync1;
-reg start_bank_sync2;
-reg source_bank_calc;
-
-// DONE toggle is declared with the CPU synchronizer declarations above.
-reg [9:0] cell_index;
-reg [4:0] neigh_index;
-reg signed [15:0] raw_force_acc;
-reg [15:0] weighted_sum_acc;
-reg [5:0] sea_count;
-reg [5:0] mountain_count;
-reg [5:0] natural_count;
-reg [5:0] urban_count;
-reg [5:0] house_count;
-reg [5:0] shop_count;
-reg [5:0] tall_count;
-reg [7:0] self_value;
-reg [7:0] avg_value;
-reg signed [15:0] bias_value;
-reg signed [15:0] delta_value;
-reg [7:0] next_value;
-
+localparam [2:0] ST_IDLE = 3'd0, ST_SEED = 3'd1, ST_SEED_DRAIN = 3'd2,
+                 ST_RUN = 3'd3, ST_FINISH = 3'd4;
+reg [2:0] calc_state;
+reg start_toggle_sync1, start_toggle_sync2, start_toggle_seen_calc;
+reg start_bank_sync1, start_bank_sync2;
 wire start_event_calc = start_toggle_sync2 ^ start_toggle_seen_calc;
 
-function [4:0] idx_to_x;
-  input [9:0] index;
-  begin
-    idx_to_x = index[4:0];
-  end
-endfunction
+// Seed history with rows 28,29,0,1, four bytes per x. Its contents need no reset:
+// every word is completely initialized before the first streaming read.
+reg [6:0] seed_issue, seed_tag;
+reg seed_valid;
+reg [31:0] seed_word;
+wire [4:0] seed_y = {3'd0, seed_issue[1:0]} + 5'd28;
+wire [4:0] seed_wrapped_y = (seed_y >= 5'd30) ? seed_y - 5'd30 : seed_y;
+reg [4:0] stream_y, bottom_y;
+reg [5:0] stream_pos;
+reg feed_active;
+wire [4:0] stream_x = stream_pos[4:0] + 5'd30;
+wire [4:0] next_bottom_y = bottom_y == 5'd29 ? 5'd0 : bottom_y + 5'd1;
+wire tail_issue = stream_pos >= 6'd32;
+wire stream_issue = calc_state == ST_RUN && feed_active;
+wire stream_read = stream_issue && (!tail_issue || stream_y != 5'd29);
+wire [4:0] read_y = tail_issue ? next_bottom_y : bottom_y;
+reg data_valid, data_has_sample;
+reg [4:0] data_y, data_x;
+reg [5:0] data_pos;
 
-function [4:0] idx_to_y;
-  input [9:0] index;
-  begin
-    idx_to_y = index[9:5];
-  end
-endfunction
+// Four prefix summaries are reused for the horizontal wrap. While an OLD
+// summary is consumed at the row tail, the same slot captures the NEXT row's
+// prefix. Four parallel reads at position 4 preload the next row's window.
+reg [60:0] wrap_summary [0:3];
+reg [10:0] col_sum [0:4];
+reg [11:0] col_weight [0:4];
+reg signed [4:0] col_force [0:4];
+reg signed [6:0] col_force_weight [0:4];
+reg [7:0] col_self [0:4];
+reg [2:0] col_sea [0:4];
+reg [2:0] col_mountain [0:4];
+reg [2:0] col_natural [0:4];
+reg [2:0] col_house [0:4];
+reg [2:0] col_shop [0:4];
+reg [2:0] col_tall [0:4];
+reg column_valid;
+reg [9:0] column_index;
 
-function signed [3:0] neigh_dx;
-  input [4:0] ni;
-  begin
-    case (ni)
-      5'd0, 5'd5, 5'd10, 5'd15, 5'd20: neigh_dx = -2;
-      5'd1, 5'd6, 5'd11, 5'd16, 5'd21: neigh_dx = -1;
-      5'd2, 5'd7, 5'd12, 5'd17, 5'd22: neigh_dx =  0;
-      5'd3, 5'd8, 5'd13, 5'd18, 5'd23: neigh_dx =  1;
-      default:                           neigh_dx =  2;
-    endcase
-  end
-endfunction
+// SUM -> AVG -> BIAS -> NEW_VALUE -> RAM write, one cell each clock.
+// Each stage owns its value, category counts, and output index.
+reg sum_valid, avg_valid, bias_valid, write_valid;
+reg [9:0] sum_index, avg_index, bias_index, write_index;
+reg [14:0] weighted_sum_acc; // <= 65*255 = 16575
+reg signed [8:0] raw_force_acc; // -130..195
+reg [4:0] sea_count, mountain_count, natural_count, house_count, shop_count, tall_count;
+reg [4:0] sea_avg, mountain_avg, natural_avg, house_avg, shop_avg, tall_avg, urban_avg;
+reg [7:0] self_value, self_avg, avg_value, self_b, avg_b, next_value;
+reg signed [8:0] force_avg, force_b;
+reg signed [9:0] bias_value;
+integer c;
 
-function signed [3:0] neigh_dy;
-  input [4:0] ni;
-  begin
-    case (ni)
-      5'd0,  5'd1,  5'd2,  5'd3,  5'd4:  neigh_dy = -2;
-      5'd5,  5'd6,  5'd7,  5'd8,  5'd9:  neigh_dy = -1;
-      5'd10, 5'd11, 5'd12, 5'd13, 5'd14: neigh_dy =  0;
-      5'd15, 5'd16, 5'd17, 5'd18, 5'd19: neigh_dy =  1;
-      default:                             neigh_dy =  2;
-    endcase
-  end
-endfunction
+wire history_seed_write = seed_valid && seed_tag[1:0] == 2'd3;
+// Each source column is read once per row, then its history advances. The
+// cached summary, not the updated history, supplies this row's repeated prefix.
+wire history_stream_write = data_valid && data_has_sample;
+wire history_we = !reset && (history_seed_write || history_stream_write);
+wire [4:0] history_waddr = history_seed_write ? seed_tag[6:2] : data_x;
+wire [31:0] history_dout;
+wire [31:0] history_din = history_seed_write ?
+    {seed_word[23:0], calc_grid_dout} : {history_dout[23:0], calc_grid_dout};
+city_row_history history_ram (
+  .clk(clk_calc), .we(history_we), .waddr(history_waddr),
+  .raddr(stream_x), .din(history_din), .q(history_dout)
+);
 
-function [4:0] wrap_x;
-  input signed [6:0] x;
-  begin
-    wrap_x = x[4:0]; // W=32
-  end
-endfunction
+assign calc_grid_we = !reset && calc_state == ST_RUN && write_valid;
+assign calc_grid_waddr = write_index;
+assign calc_grid_raddr = calc_state == ST_SEED ?
+    {seed_wrapped_y, seed_issue[6:2]} : {read_y, stream_x};
+assign calc_grid_din = next_value;
 
-function [4:0] wrap_y;
-  input signed [6:0] y;
-  begin
-    if (y < 0)       wrap_y = y + H;
-    else if (y >= H) wrap_y = y - H;
-    else             wrap_y = y[4:0];
-  end
-endfunction
-
-function [9:0] neighbor_cell_index;
-  input [9:0] center_index;
-  input [4:0] ni;
-  reg [4:0] cx;
-  reg [4:0] cy;
-  reg [4:0] nx;
-  reg [4:0] ny;
-  begin
-    cx = idx_to_x(center_index);
-    cy = idx_to_y(center_index);
-    nx = wrap_x($signed({1'b0, cx}) + neigh_dx(ni));
-    ny = wrap_y($signed({1'b0, cy}) + neigh_dy(ni));
-    neighbor_cell_index = ({5'd0, ny} << 5) + {5'd0, nx};
-  end
-endfunction
-
-function [2:0] weight_by_index;
-  input [4:0] ni;
-  begin
-    case (ni)
-       0,  4, 20, 24: weight_by_index = 3'd1;
-       1,  3,  5,  9, 15, 19, 21, 23: weight_by_index = 3'd2;
-       2,  6,  8, 10, 14, 16, 18, 22: weight_by_index = 3'd3;
-       7, 11, 13, 17: weight_by_index = 3'd4;
-      12: weight_by_index = 3'd5;
-      default: weight_by_index = 3'd1;
-    endcase
-  end
-endfunction
-
-// Intentionally written like nescity.c.  Multiplication is expressed as '*'
-// and left to Quartus to map to DSP/multiplier resources or logic.
-function signed [15:0] influence_of_simple;
+function signed [2:0] force_coefficient;
   input [7:0] v;
-  input [2:0] w;
-  integer f;
   begin
-    if (v == SEA)       f =  3 * w;
-    else if (v <= 1)    f = -2 * w;
-    else if (v <= 14)   f = -2 * w;
-    else if (v <= 24)   f =  2;
-    else if (v <= 34)   f =  1 * w;
-    else if (v <= 49)   f =  2 * w;
-    else if (v <= 62)   f =  3 * w;
-    else if (v <= 78)   f =  2 * w;
-    else                f =  1 * w;
-    influence_of_simple = f;
+    if (v == 8'd0)      force_coefficient = 3'sd3;
+    else if (v <= 8'd14) force_coefficient = -3'sd2;
+    else if (v <= 8'd24) force_coefficient = 3'sd0;
+    else if (v <= 8'd34) force_coefficient = 3'sd1;
+    else if (v <= 8'd49) force_coefficient = 3'sd2;
+    else if (v <= 8'd62) force_coefficient = 3'sd3;
+    else if (v <= 8'd78) force_coefficient = 3'sd2;
+    else                force_coefficient = 3'sd1;
+  end
+endfunction
+// The five bytes of one vertical column are available together: four old rows
+// from M9K history, and the newly fetched bottom row from the source grid.
+wire [7:0] sample_v0 = history_dout[31:24];
+wire signed [2:0] sample_f0 = force_coefficient(sample_v0);
+wire sample_special0 = sample_v0 >= 8'd15 && sample_v0 <= 8'd24;
+wire sample_sea0 = sample_v0 == 8'd0;
+wire sample_mountain0 = sample_v0 == 8'd1;
+wire sample_natural0 = sample_v0 >= 8'd1 && sample_v0 <= 8'd24;
+wire sample_house0 = sample_v0 >= 8'd35 && sample_v0 <= 8'd62;
+wire sample_shop0 = sample_v0 >= 8'd63 && sample_v0 <= 8'd78;
+wire sample_tall0 = sample_v0 >= 8'd79 && sample_v0 <= 8'd100;
+wire [7:0] sample_v1 = history_dout[23:16];
+wire signed [2:0] sample_f1 = force_coefficient(sample_v1);
+wire sample_special1 = sample_v1 >= 8'd15 && sample_v1 <= 8'd24;
+wire sample_sea1 = sample_v1 == 8'd0;
+wire sample_mountain1 = sample_v1 == 8'd1;
+wire sample_natural1 = sample_v1 >= 8'd1 && sample_v1 <= 8'd24;
+wire sample_house1 = sample_v1 >= 8'd35 && sample_v1 <= 8'd62;
+wire sample_shop1 = sample_v1 >= 8'd63 && sample_v1 <= 8'd78;
+wire sample_tall1 = sample_v1 >= 8'd79 && sample_v1 <= 8'd100;
+wire [7:0] sample_v2 = history_dout[15:8];
+wire signed [2:0] sample_f2 = force_coefficient(sample_v2);
+wire sample_special2 = sample_v2 >= 8'd15 && sample_v2 <= 8'd24;
+wire sample_sea2 = sample_v2 == 8'd0;
+wire sample_mountain2 = sample_v2 == 8'd1;
+wire sample_natural2 = sample_v2 >= 8'd1 && sample_v2 <= 8'd24;
+wire sample_house2 = sample_v2 >= 8'd35 && sample_v2 <= 8'd62;
+wire sample_shop2 = sample_v2 >= 8'd63 && sample_v2 <= 8'd78;
+wire sample_tall2 = sample_v2 >= 8'd79 && sample_v2 <= 8'd100;
+wire [7:0] sample_v3 = history_dout[7:0];
+wire signed [2:0] sample_f3 = force_coefficient(sample_v3);
+wire sample_special3 = sample_v3 >= 8'd15 && sample_v3 <= 8'd24;
+wire sample_sea3 = sample_v3 == 8'd0;
+wire sample_mountain3 = sample_v3 == 8'd1;
+wire sample_natural3 = sample_v3 >= 8'd1 && sample_v3 <= 8'd24;
+wire sample_house3 = sample_v3 >= 8'd35 && sample_v3 <= 8'd62;
+wire sample_shop3 = sample_v3 >= 8'd63 && sample_v3 <= 8'd78;
+wire sample_tall3 = sample_v3 >= 8'd79 && sample_v3 <= 8'd100;
+wire [7:0] sample_v4 = calc_grid_dout;
+wire signed [2:0] sample_f4 = force_coefficient(sample_v4);
+wire sample_special4 = sample_v4 >= 8'd15 && sample_v4 <= 8'd24;
+wire sample_sea4 = sample_v4 == 8'd0;
+wire sample_mountain4 = sample_v4 == 8'd1;
+wire sample_natural4 = sample_v4 >= 8'd1 && sample_v4 <= 8'd24;
+wire sample_house4 = sample_v4 >= 8'd35 && sample_v4 <= 8'd62;
+wire sample_shop4 = sample_v4 >= 8'd63 && sample_v4 <= 8'd78;
+wire sample_tall4 = sample_v4 >= 8'd79 && sample_v4 <= 8'd100;
+wire [10:0] sample_sum =
+    {3'd0, sample_v0}
+    + {3'd0, sample_v1}
+    + {3'd0, sample_v2}
+    + {3'd0, sample_v3}
+    + {3'd0, sample_v4};
+wire [11:0] sample_weight =
+    {4'd0, sample_v0}
+    + ({4'd0, sample_v1} << 1)
+    + ({4'd0, sample_v2} << 1)
+    + {4'd0, sample_v2}
+    + ({4'd0, sample_v3} << 1)
+    + {4'd0, sample_v4};
+wire signed [4:0] sample_force_sum =
+    $signed({{2{sample_f0[2]}}, sample_f0})
+    + $signed({{2{sample_f1[2]}}, sample_f1})
+    + $signed({{2{sample_f2[2]}}, sample_f2})
+    + $signed({{2{sample_f3[2]}}, sample_f3})
+    + $signed({{2{sample_f4[2]}}, sample_f4});
+wire signed [6:0] sample_force_weight =
+    $signed({{4{sample_f0[2]}}, sample_f0})
+    + ($signed({{4{sample_f1[2]}}, sample_f1}) << 1)
+    + ($signed({{4{sample_f2[2]}}, sample_f2}) << 1)
+    + $signed({{4{sample_f2[2]}}, sample_f2})
+    + ($signed({{4{sample_f3[2]}}, sample_f3}) << 1)
+    + $signed({{4{sample_f4[2]}}, sample_f4})
+    + $signed({5'd0, sample_special0, 1'b0})
+    + $signed({5'd0, sample_special1, 1'b0})
+    + $signed({5'd0, sample_special2, 1'b0})
+    + $signed({5'd0, sample_special3, 1'b0})
+    + $signed({5'd0, sample_special4, 1'b0});
+wire [2:0] sample_sea_sum =
+    {2'd0, sample_sea0}
+    + {2'd0, sample_sea1}
+    + {2'd0, sample_sea2}
+    + {2'd0, sample_sea3}
+    + {2'd0, sample_sea4};
+wire [2:0] sample_mountain_sum =
+    {2'd0, sample_mountain0}
+    + {2'd0, sample_mountain1}
+    + {2'd0, sample_mountain2}
+    + {2'd0, sample_mountain3}
+    + {2'd0, sample_mountain4};
+wire [2:0] sample_natural_sum =
+    {2'd0, sample_natural0}
+    + {2'd0, sample_natural1}
+    + {2'd0, sample_natural2}
+    + {2'd0, sample_natural3}
+    + {2'd0, sample_natural4};
+wire [2:0] sample_house_sum =
+    {2'd0, sample_house0}
+    + {2'd0, sample_house1}
+    + {2'd0, sample_house2}
+    + {2'd0, sample_house3}
+    + {2'd0, sample_house4};
+wire [2:0] sample_shop_sum =
+    {2'd0, sample_shop0}
+    + {2'd0, sample_shop1}
+    + {2'd0, sample_shop2}
+    + {2'd0, sample_shop3}
+    + {2'd0, sample_shop4};
+wire [2:0] sample_tall_sum =
+    {2'd0, sample_tall0}
+    + {2'd0, sample_tall1}
+    + {2'd0, sample_tall2}
+    + {2'd0, sample_tall3}
+    + {2'd0, sample_tall4};
+
+wire [60:0] sample_summary = {sample_sum, sample_weight, sample_force_sum, sample_force_weight, sample_v2, sample_sea_sum, sample_mountain_sum, sample_natural_sum, sample_house_sum, sample_shop_sum, sample_tall_sum};
+wire [60:0] incoming_summary = data_pos >= 6'd32 ?
+    wrap_summary[data_pos[1:0]] : sample_summary;
+
+// Exact /65 over 0..16575: one correction after a shift/subtract estimate.
+function [7:0] divide65;
+  input [14:0] n;
+  reg [14:0] reduced, remainder;
+  reg [7:0] q0;
+  begin
+    reduced = n - {6'd0, n[14:6]};
+    q0 = reduced[13:6];
+    remainder = n - {1'b0, q0, 6'd0} - {7'd0, q0};
+    divide65 = q0 + ((remainder >= 15'd65) ? 8'd1 : 8'd0);
   end
 endfunction
 
-function [15:0] weighted_product_simple;
-  input [7:0] v;
-  input [2:0] w;
-  integer p;
+// Exact signed truncation of (raw_force - 20)/20 for raw_force in -130..195.
+function signed [4:0] force_delta;
+  input signed [8:0] rf;
   begin
-    p = v * w;
-    weighted_product_simple = p[15:0];
+    if      (rf >=  9'sd180) force_delta =  5'sd8;
+    else if (rf >=  9'sd160) force_delta =  5'sd7;
+    else if (rf >=  9'sd140) force_delta =  5'sd6;
+    else if (rf >=  9'sd120) force_delta =  5'sd5;
+    else if (rf >=  9'sd100) force_delta =  5'sd4;
+    else if (rf >=  9'sd80)  force_delta =  5'sd3;
+    else if (rf >=  9'sd60)  force_delta =  5'sd2;
+    else if (rf >=  9'sd40)  force_delta =  5'sd1;
+    else if (rf >   9'sd0)   force_delta =  5'sd0;
+    else if (rf >  -9'sd20)  force_delta = -5'sd1;
+    else if (rf >  -9'sd40)  force_delta = -5'sd2;
+    else if (rf >  -9'sd60)  force_delta = -5'sd3;
+    else if (rf >  -9'sd80)  force_delta = -5'sd4;
+    else if (rf >  -9'sd100) force_delta = -5'sd5;
+    else if (rf >  -9'sd120) force_delta = -5'sd6;
+    else                    force_delta = -5'sd7;
   end
 endfunction
 
-// C-like bias calculation.  Constant divisions are deliberately written as '/'.
-function signed [15:0] calc_bias_simple;
+function signed [9:0] calc_bias;
   input [7:0] self;
-  input signed [15:0] raw_force;
+  input signed [8:0] rf;
   input [7:0] avg;
-  input [5:0] sea;
-  input [5:0] mountain;
-  input [5:0] natural;
-  input [5:0] urban;
-  input [5:0] house;
-  input [5:0] shop;
-  input [5:0] tall;
-  integer b;
-  integer isolation;
-  integer natural_pressure;
-  integer over_capacity;
-  integer rf;
+  input [4:0] sea, mountain, natural, urban, house, shop, tall;
+  reg signed [9:0] b;
+  reg [6:0] natural_pressure;
+  reg [7:0] over_capacity, capacity_quotient;
   begin
-    b = 0;
-    rf = raw_force;
-
-    if (self <= 1)
-      b = b - 4;
-
-    if (self >= 1 && self <= 34) begin
-      if (house >= 2) b = b + 2;
-      if (house >= 4) b = b + 2;
-      if (house >= 7) b = b + 2;
-      if (shop >= 1 && house >= 3) b = b + 1;
-      if (sea >= 4) b = b - 2;
-      if (mountain >= 3 && house < 4) b = b - 3;
-      if (house < 2) b = b - 3;
+    b = 10'sd0;
+    natural_pressure = {2'd0, natural} + {1'b0, sea, 1'b0} + {1'b0, mountain, 1'b0};
+    over_capacity = (avg > 8'd55) ? avg - 8'd55 : 8'd0;
+    // Deliberately unsigned and byte-wide: no 32-bit signed divider.
+    capacity_quotient = over_capacity / 8'd3;
+    if (self <= 8'd1) b = b - 10'sd4;
+    if (self >= 8'd1 && self <= 8'd34) begin
+      if (house >= 5'd2) b = b + 10'sd2;
+      if (house >= 5'd4) b = b + 10'sd2;
+      if (house >= 5'd7) b = b + 10'sd2;
+      if (shop >= 5'd1 && house >= 5'd3) b = b + 10'sd1;
+      if (sea >= 5'd4) b = b - 10'sd2;
+      if (mountain >= 5'd3 && house < 5'd4) b = b - 10'sd3;
+      if (house < 5'd2) b = b - 10'sd3;
     end
-
-    if (self >= 35 && self <= 62) begin
-      if (shop >= 1) b = b + 2;
-      if (tall >= 2) b = b + 1;
+    if (self >= 8'd35 && self <= 8'd62) begin
+      if (shop >= 5'd1) b = b + 10'sd2;
+      if (tall >= 5'd2) b = b + 10'sd1;
     end
-
-    if (self >= 63) begin
-      if ((shop + tall) >= 4) b = b + 2;
+    if (self >= 8'd63 && ({1'b0, shop} + {1'b0, tall}) >= 6'd4) b = b + 10'sd2;
+    if (self >= 8'd35) begin
+      if (urban < 5'd5) b = b - $signed({5'd0, (5'd5 - urban)});
+      b = b - $signed({7'd0, natural_pressure[6:4]});
     end
-
-    if (self >= 35) begin
-      isolation = (urban < 5) ? (5 - urban) : 0;
-      natural_pressure = natural + sea * 2 + mountain * 2;
-      b = b - DECLINE_STRENGTH * isolation;
-      b = b - NATURE_DECAY * (natural_pressure / 16);
-      // water_penalty is zero in the active C source.
-    end
-
-    over_capacity = avg - CAPACITY_LIMIT;
-    if (over_capacity > 0)
-      b = b - (over_capacity / CAPACITY_SCALE) * OVERCROWDING_DECAY;
-
-    if (self >= 25 && self < 35 && urban < 3 && rf < 12)
-      b = b - NATURE_RECOVERY;
-
-    if (rf < 15 && self < 35)
-      b = b - 1;
-
-    calc_bias_simple = b;
+    b = b - $signed({capacity_quotient, 2'b0});
+    if (self >= 8'd25 && self < 8'd35 && urban < 5'd3 && rf < 9'sd12) b = b - 10'sd1;
+    if (rf < 9'sd15 && self < 8'd35) b = b - 10'sd1;
+    calc_bias = b;
   end
 endfunction
 
-function signed [15:0] calc_delta_simple;
+function signed [2:0] calc_delta;
   input [7:0] self;
-  input signed [15:0] raw_force;
+  input signed [8:0] rf;
   input [7:0] avg;
-  input signed [15:0] bias;
-  integer d;
-  integer rf;
-  integer b;
-  integer a;
-  integer s;
+  input signed [9:0] bias;
+  reg signed [9:0] d;
+  reg signed [4:0] f;
   begin
-    rf = raw_force;
-    b = bias;
-    a = avg;
-    s = self;
-
-    // Verilog signed integer division truncates toward zero, matching C here.
-    d = (rf - FORCE_THRESHOLD) / FORCE_SCALE + b;
-    if (a > s + 12) d = d + 1;
-    if (a < s - 20) d = d - 1;
-
-    if (d > MAX_RISE)  d = MAX_RISE;
-    if (d < -MAX_FALL) d = -MAX_FALL;
-
-    calc_delta_simple = d;
+    f = force_delta(rf);
+    d = $signed({{5{f[4]}}, f}) + bias;
+    if ({1'b0, avg} > {1'b0, self} + 9'd12) d = d + 10'sd1;
+    if ({1'b0, avg} + 9'd20 < {1'b0, self}) d = d - 10'sd1;
+    if (d > 10'sd1)       calc_delta = 3'sd1;
+    else if (d < -10'sd3) calc_delta = -3'sd3;
+    else                  calc_delta = d[2:0];
   end
 endfunction
 
-function [7:0] calc_new_value_simple;
+function [7:0] calc_new_value;
   input [7:0] self;
-  input signed [15:0] delta;
-  integer nv;
-  integer d;
+  input signed [2:0] delta;
+  reg signed [9:0] nv;
   begin
-    d = delta;
-    if (self == SEA) begin
-      calc_new_value_simple = 8'd0;
-    end else begin
-      nv = self + d;
-      if (nv < 1)   nv = 1;
-      if (nv > 100) nv = 100;
-      if (self <= 1 && nv > 8) nv = 8;
-      calc_new_value_simple = nv[7:0];
-    end
+    nv = $signed({2'b0, self}) + $signed({{7{delta[2]}}, delta});
+    if (self == 8'd0)  calc_new_value = 8'd0;
+    else if (nv < 10'sd1)   calc_new_value = 8'd1;
+    else if (nv > 10'sd100) calc_new_value = 8'd100;
+    else calc_new_value = nv[7:0];
+    // self <= 1 can rise by at most 1, so the reference's >8 cap is unreachable.
   end
 endfunction
+
 
 always @(posedge clk_calc or posedge reset) begin
   if (reset) begin
-    start_toggle_sync1     <= 1'b0;
-    start_toggle_sync2     <= 1'b0;
+    start_toggle_sync1 <= 1'b0;
+    start_toggle_sync2 <= 1'b0;
     start_toggle_seen_calc <= 1'b0;
-    start_bank_sync1       <= 1'b0;
-    start_bank_sync2       <= 1'b0;
-    source_bank_calc       <= 1'b0;
-    done_toggle_calc       <= 1'b0;
-
-    calc_state       <= ST_IDLE;
-    cell_index       <= 10'd0;
-    neigh_index      <= 5'd0;
-    raw_force_acc    <= 16'sd0;
-    weighted_sum_acc <= 16'd0;
-    sea_count        <= 6'd0;
-    mountain_count   <= 6'd0;
-    natural_count    <= 6'd0;
-    urban_count      <= 6'd0;
-    house_count      <= 6'd0;
-    shop_count       <= 6'd0;
-    tall_count       <= 6'd0;
-    self_value       <= 8'd0;
-    avg_value        <= 8'd0;
-    bias_value       <= 16'sd0;
-    delta_value      <= 16'sd0;
-    next_value       <= 8'd0;
-    calc_grid_we     <= 1'b0;
-    calc_grid_addr   <= 11'd0;
-    calc_grid_din    <= 8'd0;
+    start_bank_sync1 <= 1'b0;
+    start_bank_sync2 <= 1'b0;
+    source_bank_calc <= 1'b0;
+    done_toggle_calc <= 1'b0;
+    calc_state <= ST_IDLE;
+    seed_issue <= 7'd0;
+    seed_tag <= 7'd0;
+    seed_valid <= 1'b0;
+    seed_word <= 32'd0;
+    stream_y <= 5'd0;
+    bottom_y <= 5'd2;
+    stream_pos <= 6'd0;
+    feed_active <= 1'b0;
+    data_valid <= 1'b0;
+    data_has_sample <= 1'b0;
+    data_y <= 5'd0;
+    data_x <= 5'd0;
+    data_pos <= 6'd0;
+    column_valid <= 1'b0;
+    column_index <= 10'd0;
+    weighted_sum_acc <= 15'd0;
+    raw_force_acc <= 9'sd0;
+    force_avg <= 9'sd0;
+    force_b <= 9'sd0;
+    bias_value <= 10'sd0;
+    sum_valid <= 1'b0;
+    sum_index <= 10'd0;
+    avg_valid <= 1'b0;
+    avg_index <= 10'd0;
+    bias_valid <= 1'b0;
+    bias_index <= 10'd0;
+    write_valid <= 1'b0;
+    write_index <= 10'd0;
+    sea_count <= 5'd0;
+    sea_avg <= 5'd0;
+    mountain_count <= 5'd0;
+    mountain_avg <= 5'd0;
+    natural_count <= 5'd0;
+    natural_avg <= 5'd0;
+    house_count <= 5'd0;
+    house_avg <= 5'd0;
+    shop_count <= 5'd0;
+    shop_avg <= 5'd0;
+    tall_count <= 5'd0;
+    tall_avg <= 5'd0;
+    urban_avg <= 5'd0;
+    self_value <= 8'd0;
+    self_avg <= 8'd0;
+    avg_value <= 8'd0;
+    self_b <= 8'd0;
+    avg_b <= 8'd0;
+    next_value <= 8'd0;
+    // Both summary caches are filled before a valid window can use them.
   end else begin
-    calc_grid_we <= 1'b0;
-
-    // Synchronize the START toggle and associated stable bank bit.
     start_toggle_sync1 <= start_toggle_cpu;
     start_toggle_sync2 <= start_toggle_sync1;
-    start_bank_sync1   <= start_bank_cpu;
-    start_bank_sync2   <= start_bank_sync1;
-
+    start_bank_sync1 <= start_bank_cpu;
+    start_bank_sync2 <= start_bank_sync1;
+    seed_valid <= calc_state == ST_SEED;
+    seed_tag <= seed_issue;
+    if (seed_valid) seed_word <= {seed_word[23:0], calc_grid_dout};
+    // One synchronous RAM latency, including at row boundaries.
+    data_valid <= stream_issue;
+    data_has_sample <= stream_read;
+    data_y <= stream_y;
+    data_x <= stream_x;
+    data_pos <= stream_pos;
     case (calc_state)
-      ST_IDLE: begin
-        if (start_event_calc) begin
-          start_toggle_seen_calc <= start_toggle_sync2;
-          source_bank_calc <= start_bank_sync2;
-          cell_index <= 10'd0;
-          neigh_index <= 5'd0;
-          calc_state <= ST_CELL_INIT;
+      ST_IDLE: if (start_event_calc) begin
+        start_toggle_seen_calc <= start_toggle_sync2;
+        source_bank_calc <= start_bank_sync2;
+        seed_issue <= 7'd0;
+        stream_y <= 5'd0;
+        bottom_y <= 5'd2;
+        stream_pos <= 6'd0;
+        feed_active <= 1'b1;
+        column_valid <= 1'b0;
+        sum_valid <= 1'b0;
+        avg_valid <= 1'b0;
+        bias_valid <= 1'b0;
+        write_valid <= 1'b0;
+        calc_state <= ST_SEED;
+      end
+      ST_SEED: begin
+        seed_issue <= seed_issue + 7'd1;
+        if (seed_issue == 7'd127) calc_state <= ST_SEED_DRAIN;
+      end
+      ST_SEED_DRAIN: calc_state <= ST_RUN;
+      ST_RUN: begin
+        if (feed_active) begin
+          if (stream_pos == 6'd35) begin
+            // The prefix was prefetched during the previous row's tail.
+            stream_pos <= 6'd4;
+            if (stream_y == 5'd29) feed_active <= 1'b0;
+            else begin
+              stream_y <= stream_y + 5'd1;
+              bottom_y <= next_bottom_y;
+            end
+          end else stream_pos <= stream_pos + 6'd1;
         end
-      end
 
-      ST_CELL_INIT: begin
-        neigh_index      <= 5'd0;
-        raw_force_acc    <= 16'sd0;
-        weighted_sum_acc <= 16'd0;
-        sea_count        <= 6'd0;
-        mountain_count   <= 6'd0;
-        natural_count    <= 6'd0;
-        urban_count      <= 6'd0;
-        house_count      <= 6'd0;
-        shop_count       <= 6'd0;
-        tall_count       <= 6'd0;
-        self_value       <= 8'd0;
-
-        calc_grid_addr <= bank_addr(source_bank_calc,
-                                    neighbor_cell_index(cell_index, 5'd0));
-        calc_state <= ST_NEIGH_WAIT;
-      end
-
-      ST_NEIGH_ADDR: begin
-        calc_grid_addr <= bank_addr(source_bank_calc,
-                                    neighbor_cell_index(cell_index, neigh_index));
-        calc_state <= ST_NEIGH_WAIT;
-      end
-
-      // Port A RAM is synchronous-read.  Give it one complete 10 MHz cycle after
-      // changing the address before consuming q_a.
-      ST_NEIGH_WAIT: begin
-        calc_state <= ST_NEIGH_DATA;
-      end
-
-      ST_NEIGH_DATA: begin
-        raw_force_acc <= raw_force_acc +
-                         influence_of_simple(calc_grid_dout, weight_by_index(neigh_index));
-        weighted_sum_acc <= weighted_sum_acc +
-                            weighted_product_simple(calc_grid_dout, weight_by_index(neigh_index));
-
-        if (calc_grid_dout == SEA)                         sea_count      <= sea_count + 6'd1;
-        if (calc_grid_dout <= 1 && calc_grid_dout != SEA) mountain_count <= mountain_count + 6'd1;
-        if (calc_grid_dout >= 1  && calc_grid_dout <= 24) natural_count  <= natural_count + 6'd1;
-        if (calc_grid_dout >= 35 && calc_grid_dout <=100) urban_count    <= urban_count + 6'd1;
-        if (calc_grid_dout >= 35 && calc_grid_dout <= 62) house_count    <= house_count + 6'd1;
-        if (calc_grid_dout >= 63 && calc_grid_dout <= 78) shop_count     <= shop_count + 6'd1;
-        if (calc_grid_dout >= 79 && calc_grid_dout <=100) tall_count     <= tall_count + 6'd1;
-
-        if (neigh_index == 5'd12)
-          self_value <= calc_grid_dout;
-
-        if (neigh_index == 5'd24) begin
-          calc_state <= ST_AVG;
-        end else begin
-          neigh_index <= neigh_index + 5'd1;
-          calc_state <= ST_NEIGH_ADDR;
+        column_valid <= data_valid && data_pos >= 6'd4;
+        if (data_valid) begin
+          if (data_has_sample && (data_pos < 6'd4 || data_pos >= 6'd32))
+            wrap_summary[data_pos[1:0]] <= sample_summary;
+          if (data_pos >= 6'd4) begin
+            column_index <= {data_y, (data_pos[4:0] - 5'd4)};
+            for (c=0; c<4; c=c+1) begin
+              if (data_pos == 6'd4)
+                {col_sum[c], col_weight[c], col_force[c], col_force_weight[c], col_self[c], col_sea[c], col_mountain[c], col_natural[c], col_house[c], col_shop[c], col_tall[c]} <= wrap_summary[c];
+              else
+                {col_sum[c], col_weight[c], col_force[c], col_force_weight[c], col_self[c], col_sea[c], col_mountain[c], col_natural[c], col_house[c], col_shop[c], col_tall[c]} <= {col_sum[c+1], col_weight[c+1], col_force[c+1], col_force_weight[c+1], col_self[c+1], col_sea[c+1], col_mountain[c+1], col_natural[c+1], col_house[c+1], col_shop[c+1], col_tall[c+1]};
+            end
+            {col_sum[4], col_weight[4], col_force[4], col_force_weight[4], col_self[4], col_sea[4], col_mountain[4], col_natural[4], col_house[4], col_shop[4], col_tall[4]} <= incoming_summary;
+          end
         end
-      end
 
-      // The accumulators already include neighbor #24 when this state executes.
-      ST_AVG: begin
-        avg_value <= weighted_sum_acc / WEIGHT_SUM;
-        calc_state <= ST_BIAS;
-      end
-
-      ST_BIAS: begin
-        bias_value <= calc_bias_simple(
-            self_value, raw_force_acc, avg_value,
-            sea_count, mountain_count, natural_count, urban_count,
-            house_count, shop_count, tall_count);
-        calc_state <= ST_DELTA;
-      end
-
-      ST_DELTA: begin
-        delta_value <= calc_delta_simple(self_value, raw_force_acc, avg_value, bias_value);
-        calc_state <= ST_NEW_VALUE;
-      end
-
-      ST_NEW_VALUE: begin
-        next_value <= calc_new_value_simple(self_value, delta_value);
-        calc_state <= ST_WRITE;
-      end
-
-      ST_WRITE: begin
-        calc_grid_we   <= 1'b1;
-        calc_grid_addr <= bank_addr(~source_bank_calc, cell_index);
-        calc_grid_din  <= next_value;
-
-        if (cell_index == N-1) begin
-          calc_state <= ST_FINISH;
-        end else begin
-          cell_index <= cell_index + 10'd1;
-          calc_state <= ST_CELL_INIT;
+        sum_valid <= column_valid;
+        if (column_valid) begin
+          sum_index <= column_index;
+            weighted_sum_acc <= {3'd0, col_weight[0]} + {3'd0, col_weight[1]} + {3'd0, col_weight[2]}
+                + {3'd0, col_weight[3]} + {3'd0, col_weight[4]} + {4'd0, col_sum[1]}
+                + ({4'd0, col_sum[2]} << 1) + {4'd0, col_sum[3]};
+            raw_force_acc <= $signed({{2{col_force_weight[0][6]}}, col_force_weight[0]})
+                + $signed({{2{col_force_weight[1][6]}}, col_force_weight[1]})
+                + $signed({{2{col_force_weight[2][6]}}, col_force_weight[2]})
+                + $signed({{2{col_force_weight[3][6]}}, col_force_weight[3]})
+                + $signed({{2{col_force_weight[4][6]}}, col_force_weight[4]})
+                + $signed({{4{col_force[1][4]}}, col_force[1]})
+                + ($signed({{4{col_force[2][4]}}, col_force[2]}) <<< 1)
+                + $signed({{4{col_force[3][4]}}, col_force[3]});
+            self_value <= col_self[2];
+            sea_count <= {2'd0, col_sea[0]} + {2'd0, col_sea[1]} + {2'd0, col_sea[2]} + {2'd0, col_sea[3]} + {2'd0, col_sea[4]};
+            mountain_count <= {2'd0, col_mountain[0]} + {2'd0, col_mountain[1]} + {2'd0, col_mountain[2]} + {2'd0, col_mountain[3]} + {2'd0, col_mountain[4]};
+            natural_count <= {2'd0, col_natural[0]} + {2'd0, col_natural[1]} + {2'd0, col_natural[2]} + {2'd0, col_natural[3]} + {2'd0, col_natural[4]};
+            house_count <= {2'd0, col_house[0]} + {2'd0, col_house[1]} + {2'd0, col_house[2]} + {2'd0, col_house[3]} + {2'd0, col_house[4]};
+            shop_count <= {2'd0, col_shop[0]} + {2'd0, col_shop[1]} + {2'd0, col_shop[2]} + {2'd0, col_shop[3]} + {2'd0, col_shop[4]};
+            tall_count <= {2'd0, col_tall[0]} + {2'd0, col_tall[1]} + {2'd0, col_tall[2]} + {2'd0, col_tall[3]} + {2'd0, col_tall[4]};
         end
+        avg_valid <= sum_valid;
+        if (sum_valid) begin
+          avg_index <= sum_index;
+          avg_value <= divide65(weighted_sum_acc);
+          urban_avg <= house_count + shop_count + tall_count;
+          self_avg <= self_value;
+          force_avg <= raw_force_acc;
+          sea_avg <= sea_count;
+          mountain_avg <= mountain_count;
+          natural_avg <= natural_count;
+          house_avg <= house_count;
+          shop_avg <= shop_count;
+          tall_avg <= tall_count;
+        end
+        bias_valid <= avg_valid;
+        if (avg_valid) begin
+          bias_index <= avg_index;
+          self_b <= self_avg;
+          avg_b <= avg_value;
+          force_b <= force_avg;
+          bias_value <= calc_bias(self_avg, force_avg, avg_value,
+              sea_avg, mountain_avg, natural_avg, urban_avg, house_avg, shop_avg, tall_avg);
+        end
+        write_valid <= bias_valid;
+        if (bias_valid) begin
+          write_index <= bias_index;
+          next_value <= calc_new_value(self_b, calc_delta(self_b, force_b, avg_b, bias_value));
+        end
+        // The final destination write commits on this edge, before DONE.
+        if (write_valid && write_index == 10'd959) calc_state <= ST_FINISH;
       end
-
       ST_FINISH: begin
-        // All writes are complete before this event crosses back to clk_cpu.
         done_toggle_calc <= ~done_toggle_calc;
         calc_state <= ST_IDLE;
       end
-
-      default: begin
-        calc_state <= ST_IDLE;
-      end
+      default: calc_state <= ST_IDLE;
     endcase
   end
 end
@@ -722,7 +762,7 @@ module city_grid_dpram_dc
   output reg  [DATA_WIDTH-1:0] q_b
 );
 
-reg [DATA_WIDTH-1:0] ram [0:(1<<ADDR_WIDTH)-1];
+(* ramstyle = "M9K" *) reg [DATA_WIDTH-1:0] ram [0:(1<<ADDR_WIDTH)-1];
 
 always @(posedge clk_a) begin
   if (we_a)
@@ -736,4 +776,21 @@ always @(posedge clk_b) begin
   q_b <= ram[addr_b];
 end
 
+endmodule
+
+// Four rows x 32 columns, packed by column, in one simple-dual-port M9K.
+// Concurrent reads and writes use different column addresses while streaming.
+// Read-during-write collisions during seeding have no valid consumer.
+module city_row_history (
+  input wire clk,
+  input wire we,
+  input wire [4:0] waddr, raddr,
+  input wire [31:0] din,
+  output reg [31:0] q
+);
+(* ramstyle = "M9K, no_rw_check" *) reg [31:0] ram [0:31];
+always @(posedge clk) begin
+  if (we) ram[waddr] <= din;
+  q <= ram[raddr];
+end
 endmodule

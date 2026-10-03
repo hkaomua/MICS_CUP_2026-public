@@ -1,0 +1,235 @@
+{
+  "tool": "Yosys 0.68+195 (git sha1 435977e97-dirty, Release, Clang /usr/local/osxcross/target/bin/aarch64-apple-darwin25.5-clang++ 21.1.8)",
+  "target": "10M08SAE144C8GES",
+  "method": "synth_intel logic mapping with all M9K-tagged memories preserved as $mem_v2; unsafe experimental BRAM wrapper bypassed.",
+  "caveat": "Accelerator-only estimate; no Quartus fitting/timing. All M9K counts are inferred from checked RAM shapes, not physically mapped. Previous and baseline estimates are recomputed using this same flow.",
+  "baseline": {
+    "rtl_sha256": "4d59e60795b99920e59b7e27b7d867b6ae4e122f3712509823d17f656670cadb",
+    "logic_cells": 1018,
+    "flip_flops": 213,
+    "other_not_cells": 3,
+    "unpacked_logic_plus_ff": 1231,
+    "dsp_cells": 0,
+    "grid_ram_bits": 16384,
+    "history_logical_bits": 0,
+    "expected_m9k_blocks": 2,
+    "mapped_m9k_cells": [],
+    "unmapped_memories": [
+      {
+        "name": "city_grid_ram.ram",
+        "ABITS": 11,
+        "SIZE": 2048,
+        "WIDTH": 8,
+        "RD_PORTS": 2,
+        "WR_PORTS": 2,
+        "RD_CLK_ENABLE": 3,
+        "WR_CLK_ENABLE": 3
+      }
+    ]
+  },
+  "previous": {
+    "rtl_sha256": "4ac2c7d74e71cab76c16287c88130f6ff0052d470e3f8458086ea02fe7cad158",
+    "logic_cells": 1433,
+    "flip_flops": 533,
+    "other_not_cells": 5,
+    "unpacked_logic_plus_ff": 1966,
+    "dsp_cells": 0,
+    "grid_ram_bits": 16384,
+    "history_logical_bits": 1024,
+    "expected_m9k_blocks": 3,
+    "mapped_m9k_cells": [],
+    "unmapped_memories": [
+      {
+        "name": "city_grid_ram.ram",
+        "ABITS": 11,
+        "SIZE": 2048,
+        "WIDTH": 8,
+        "RD_PORTS": 2,
+        "WR_PORTS": 2,
+        "RD_CLK_ENABLE": 3,
+        "WR_CLK_ENABLE": 3
+      },
+      {
+        "name": "history_ram.ram",
+        "ABITS": 5,
+        "SIZE": 32,
+        "WIDTH": 32,
+        "RD_PORTS": 1,
+        "WR_PORTS": 1,
+        "RD_CLK_ENABLE": 1,
+        "WR_CLK_ENABLE": 1
+      }
+    ]
+  },
+  "optimized": {
+    "rtl_sha256": "f9bfba4ad27fcb660535e766de763d7d094b3082362dc6126f22fb800a791d05",
+    "logic_cells": 1883,
+    "flip_flops": 850,
+    "other_not_cells": 5,
+    "unpacked_logic_plus_ff": 2733,
+    "dsp_cells": 0,
+    "grid_ram_bits": 16384,
+    "history_logical_bits": 1024,
+    "expected_m9k_blocks": 3,
+    "mapped_m9k_cells": [],
+    "unmapped_memories": [
+      {
+        "name": "grid_bank0.ram",
+        "ABITS": 10,
+        "SIZE": 1024,
+        "WIDTH": 8,
+        "RD_PORTS": 2,
+        "WR_PORTS": 2,
+        "RD_CLK_ENABLE": 3,
+        "WR_CLK_ENABLE": 3
+      },
+      {
+        "name": "grid_bank1.ram",
+        "ABITS": 10,
+        "SIZE": 1024,
+        "WIDTH": 8,
+        "RD_PORTS": 2,
+        "WR_PORTS": 2,
+        "RD_CLK_ENABLE": 3,
+        "WR_CLK_ENABLE": 3
+      },
+      {
+        "name": "history_ram.ram",
+        "ABITS": 5,
+        "SIZE": 32,
+        "WIDTH": 32,
+        "RD_PORTS": 1,
+        "WR_PORTS": 1,
+        "RD_CLK_ENABLE": 1,
+        "WR_CLK_ENABLE": 1
+      }
+    ]
+  },
+  "mapped_logic_check": {
+    "generations": 2,
+    "both_banks_checked": true,
+    "passed": true,
+    "model": "Mapped LUT/FF logic with checked functional cell modes; generic RAMs; no physical timing."
+  },
+  "date": "2026-09-06",
+  "baseline_git_ref": "a614553",
+  "branch": "fpga/max10-opt",
+  "reference_c_sha256": "c626cd51846c1e409640ec6084364570c39d026897c76f4a691f5e208bc4c23f",
+  "verilator": "Verilator 5.053 devel rev v5.052-22-g7cf8c5cca (mod)",
+  "iverilog": "Icarus Verilog 14.0 devel (s20260301-403-g5ab23063f-dirty)",
+  "quartus_fitter_verified": false,
+  "hardware_verified": false,
+  "whole_design_memory_estimate": {
+    "method": "Source inventory of major active memories; not a Quartus whole-design synthesis or fitting result. Smaller PPU memories may consume additional M9K blocks.",
+    "device_m9k_blocks": 42,
+    "major_m9k_blocks": {
+      "prg": 16,
+      "chr": 8,
+      "cart_wram": 8,
+      "nes_wram": 2,
+      "vram": 2,
+      "oam": 1,
+      "accelerator_grid": 2,
+      "accelerator_history": 1
+    },
+    "major_m9k_blocks_total": 40
+  },
+  "previous_git_ref": "93d211313206c56676cd93422c6d444108832510",
+  "simulation": {
+    "baseline_smoke": "PASS cases=59 generations=132 calc_cycles_min=76804 calc_cycles_max=76804 cpu_half_ns=5",
+    "baseline_smoke_provenance": "Unchanged baseline result retained from commit 24171f4; not rerun for this change.",
+    "previous_full": "PASS cases=355 generations=2058 calc_cycles_min=2299 calc_cycles_max=2299 cpu_half_ns=5 reset_recoveries=26",
+    "previous_full_provenance": "Verified checkpoint result retained from commit 93d2113; RTL unchanged since that measurement.",
+    "optimized_full": "PASS cases=355 generations=2058 calc_cycles_min=1103 calc_cycles_max=1103 cpu_half_ns=5 reset_recoveries=33",
+    "optimized_full_cpu_half_7ns": "PASS cases=355 generations=2058 calc_cycles_min=1103 calc_cycles_max=1104 cpu_half_ns=7 reset_recoveries=33",
+    "known_crc": {
+      "0": "37C2",
+      "256": "4963",
+      "512": "D350",
+      "768": "593A",
+      "1024": "EE30",
+      "1280": "1FC3"
+    },
+    "arithmetic": {
+      "divide65_inputs": 16576,
+      "force_delta_inputs": 326,
+      "bias_delta_pairs": 65536,
+      "clamp_pairs": 1280,
+      "passed": true
+    },
+    "four_state": {
+      "generations": 2,
+      "both_banks_checked": true,
+      "passed": true
+    },
+    "history_collision_x": {
+      "generations": 2,
+      "both_banks_checked": true,
+      "passed": true,
+      "condition": "Simultaneous read and write to the same history address."
+    },
+    "access_checks": {
+      "generations": 2,
+      "reads_per_generation": 1088,
+      "writes_per_generation": 960,
+      "ordered_consecutive_writes": true,
+      "no_consumed_history_collisions": true,
+      "passed": true
+    },
+    "reset_recovery_offsets_calc_clocks": [
+      4,
+      128,
+      129,
+      130,
+      131,
+      132,
+      133,
+      134,
+      135,
+      136,
+      137,
+      138,
+      139,
+      140,
+      141,
+      142,
+      143,
+      144,
+      145,
+      164,
+      165,
+      166,
+      167,
+      168,
+      169,
+      170,
+      171,
+      172,
+      173,
+      174,
+      1097,
+      1099,
+      1101
+    ]
+  },
+  "performance": {
+    "baseline_calc_clocks": 76804,
+    "previous_calc_clocks": 2299,
+    "optimized_calc_clocks": 1103,
+    "ratio": 69.63191296464188,
+    "ratio_vs_previous": 2.084315503173164,
+    "clock_hz": 10000000,
+    "body_clocks": 1099,
+    "history_seed_reads": 128,
+    "stream_grid_reads": 960,
+    "output_writes": 960,
+    "output_interval_clocks": 1
+  },
+  "evaluation_sha256": {
+    "resources.py": "0d405531a82860ab9d8c35dd9764a5cea4ad003d15b132cc59605f87c5eb63b6",
+    "mapped_cells_sim.v": "f7580a26f7cc272d04b77a5f02eec49a972343d8b76a9a8e366141715a7156aa",
+    "run.py": "d4823ee74a956a9d582d60b1a32c1bd92c685b3ce8f181ce5c571269378cb272",
+    "sim_main.cpp": "ab162a9427be226e771448fb96137d3c0c341d225052a2af9dbd34906bd6df29",
+    "four_state_tb.sv": "700fa6c9620f50db28ce7fcf5b2981b95e45b6af4e76b5d46794664302c37183"
+  }
+}
