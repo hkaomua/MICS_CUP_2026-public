@@ -1,0 +1,117 @@
+{
+  "date": "2026-09-06",
+  "branch": "fpga/learned-pattern",
+  "base_revision": "24171f4487ddb46ad1601dd50bc97ab74a703780",
+  "rtl_sha256": "f26eeea5859ce4f4708bd6e966648d82bd5ce195419387077dad45255422e214",
+  "model_sha256": "ba113153d56f2a20858a8daf29083e9add2cb0ed6bae9f7d65e7e00129538b6b",
+  "model_kind": "selective temporal constant-rule classifier (not a neural network)",
+  "training_sha256": "92e2aac015c470f8362978a4f68c127a1867bd61ea9e2f338446c7271bffcb05",
+  "model_accepted_precision": 1.0,
+  "model_training_coverage": 0.6296484375,
+  "simulation": {
+    "standard_generations_checked": [
+      0,
+      1300
+    ],
+    "full_cases_per_clock": 355,
+    "full_generations_per_clock": 2078,
+    "guard_cases_per_clock": 18,
+    "guard_generations_per_clock": 2716,
+    "four_state_generations": 90,
+    "cpu_half_periods_ns": [
+      5,
+      7
+    ],
+    "calc_clock_mhz": 10,
+    "all_cells_match_unchanged_C": true,
+    "learned_cycles_per_step": 4133,
+    "normal_cycles_per_step": 6400,
+    "initial_guard_extra_cycles": 961,
+    "first1280_cycles": 5486163,
+    "stable_first1280_cycles": 8192000,
+    "first1280_speedup": 1.4932111933240044,
+    "first1280_calc_seconds": 0.5486163,
+    "stable_first1280_calc_seconds": 0.8192,
+    "cycles_include": "MMIO START through BUSY release; excludes CPU drawing, hashing and polling instructions"
+  },
+  "resources": {
+    "tool": "Yosys 0.68+195 (git sha1 435977e97-dirty, Release, Clang /usr/local/osxcross/target/bin/aarch64-apple-darwin25.5-clang++ 21.1.8)",
+    "target": "10M08SAE144C8GES",
+    "caveat": "Logic-only mapping with RAM/ROM retained as $mem_v2. Experimental MAX10 backend rejects initialized ROM INIT; no Quartus fit/timing or mapped M9K claim.",
+    "stable": {
+      "rtl_sha256": "a001dd15d1f3381050531900f2e49d10f922395bc91fa69fb9492a84d6930473",
+      "logic_cells": 1256,
+      "flip_flops": 514,
+      "dsp_cells": 0,
+      "other_not_cells": 3,
+      "unmapped_memories": [
+        {
+          "name": "city_grid_ram.ram",
+          "ABITS": 11,
+          "SIZE": 2048,
+          "WIDTH": 8,
+          "RD_PORTS": 2,
+          "WR_PORTS": 2,
+          "RD_CLK_ENABLE": 3,
+          "WR_CLK_ENABLE": 3
+        }
+      ],
+      "expected_m9k_blocks": 2
+    },
+    "learned": {
+      "rtl_sha256": "f26eeea5859ce4f4708bd6e966648d82bd5ce195419387077dad45255422e214",
+      "logic_cells": 1354,
+      "flip_flops": 543,
+      "dsp_cells": 0,
+      "other_not_cells": 3,
+      "unmapped_memories": [
+        {
+          "name": "city_grid_ram.ram",
+          "ABITS": 11,
+          "SIZE": 2048,
+          "WIDTH": 8,
+          "RD_PORTS": 2,
+          "WR_PORTS": 2,
+          "RD_CLK_ENABLE": 3,
+          "WR_CLK_ENABLE": 3
+        },
+        {
+          "name": "learned_rom.rom",
+          "ABITS": 10,
+          "SIZE": 1024,
+          "WIDTH": 9,
+          "RD_PORTS": 1,
+          "WR_PORTS": 0,
+          "RD_CLK_ENABLE": 1,
+          "WR_CLK_ENABLE": 0
+        }
+      ],
+      "expected_m9k_blocks": 3
+    }
+  },
+  "logs": {
+    "full_cpu_half_5": "Generated 355 cases / 2078 generations; CRC {0: '37C2', 256: '4963', 512: 'D350', 768: '593A', 1024: 'EE30', 1280: '1FC3'}\nchecked case 0, generations=1300\nchecked case 31, generations=1362\nchecked case 63, generations=1426\nchecked case 95, generations=1490\nchecked case 127, generations=1554\nchecked case 159, generations=1618\nchecked case 191, generations=1682\nchecked case 223, generations=1746\nchecked case 255, generations=1810\nchecked case 287, generations=1905\nchecked case 319, generations=2001\nchecked case 351, generations=2069\nofficial_cycles_total=5614163 first1280_cycles_total=5486163 cycles_4133=1194 cycles_6400=105 cycles_7361=1\nPASS cases=355 generations=2078 calc_cycles_min=4133 calc_cycles_max=7361 cpu_half_ns=5 reset_recoveries=18\nPASS arithmetic: /65=16576, force=326, bias/delta=65536, clamp=1280\n/Users/ham/.codex/worktrees/1fd6/MICS2026_astra/.worktrees/fpga-learned/Nescity_FPGA/eval/arithmetic_tb.sv:48: $finish called at 0 (1s)\nPASS four-state: two complete generations / both RAM banks, no X outputs\n/Users/ham/.codex/worktrees/1fd6/MICS2026_astra/.worktrees/fpga-learned/Nescity_FPGA/eval/four_state_tb.sv:57: $finish called at 1511310000 (1ps)\n",
+    "full_cpu_half_7": "checked case 0, generations=1300\nchecked case 31, generations=1362\nchecked case 63, generations=1426\nchecked case 95, generations=1490\nchecked case 127, generations=1554\nchecked case 159, generations=1618\nchecked case 191, generations=1682\nchecked case 223, generations=1746\nchecked case 255, generations=1810\nchecked case 287, generations=1905\nchecked case 319, generations=2001\nchecked case 351, generations=2069\nofficial_cycles_total=5615463 first1280_cycles_total=5487443 cycles_4134=1194 cycles_6401=105 cycles_7362=1\nPASS cases=355 generations=2078 calc_cycles_min=4134 calc_cycles_max=7362 cpu_half_ns=7 reset_recoveries=18\n",
+    "guards_cpu_half_5": "checked guard case=0 mode=3\nchecked guard case=1 mode=3\nchecked guard case=2 mode=3\nchecked guard case=3 mode=3\nchecked guard case=4 mode=0\nchecked guard case=5 mode=0\nchecked guard case=6 mode=0\nchecked guard case=7 mode=0\nchecked guard case=8 mode=1\nchecked guard case=9 mode=4\nchecked guard case=10 mode=2\nchecked guard case=11 mode=2\nchecked guard case=12 mode=2\nchecked guard case=13 mode=2\nchecked guard case=14 mode=2\nchecked guard case=15 mode=2\nchecked guard case=16 mode=2\nchecked guard case=17 mode=2\nPASS learned guards cases=18 generations=2716 cpu_half_ns=5\n",
+    "guards_cpu_half_7": "checked guard case=0 mode=3\nchecked guard case=1 mode=3\nchecked guard case=2 mode=3\nchecked guard case=3 mode=3\nchecked guard case=4 mode=0\nchecked guard case=5 mode=0\nchecked guard case=6 mode=0\nchecked guard case=7 mode=0\nchecked guard case=8 mode=1\nchecked guard case=9 mode=4\nchecked guard case=10 mode=2\nchecked guard case=11 mode=2\nchecked guard case=12 mode=2\nchecked guard case=13 mode=2\nchecked guard case=14 mode=2\nchecked guard case=15 mode=2\nchecked guard case=16 mode=2\nchecked guard case=17 mode=2\nPASS learned guards cases=18 generations=2716 cpu_half_ns=7\n",
+    "four_state_90": "PASS four-state: 90 complete generations / both RAM banks, no X outputs\nNescity_FPGA/eval/four_state_tb.sv:58: $finish called at 60303710000 (1ps)\n"
+  },
+  "tools": {
+    "verilator": "Verilator 5.053 devel rev v5.052-22-g7cf8c5cca (mod)",
+    "iverilog": "Icarus Verilog version 14.0 (devel) (s20260301-403-g5ab23063f-dirty)",
+    "python": "Python 3.14.7"
+  },
+  "evaluation_source_sha256": {
+    "Nescity_FPGA/eval/arithmetic_tb.sv": "5c072030dc1f654a969d04144fdddd26b9b2048f70ca12cb90edbf34d806d163",
+    "Nescity_FPGA/eval/check_learned_guards.py": "5b0f99d3aa0c3474e2e1c4608d75386b6a7f621f78cfb7355d6bf20f054fbe2e",
+    "Nescity_FPGA/eval/four_state_tb.sv": "67ea6fcb7867ce3416168dc6f3bb13a0a5f27333cad214671bbe3873bd1f4a33",
+    "Nescity_FPGA/eval/learned.py": "27f90a08c4d61e27cc3aa57d141a299b5672de4a90876990117397806db44e48",
+    "Nescity_FPGA/eval/learned_guards.cpp": "0a947e79c845f0f67000ebe0b1d119f1bab3f2c82b6480049111b201cd575f49",
+    "Nescity_FPGA/eval/learned_resources.py": "77460c0fd33515ad2f4ed8202bf2d7c619c368e916fcad97ca98771e6bda5f50",
+    "Nescity_FPGA/eval/reference.c": "36ea4a534aff9415b8a446cf96c279fcb3d7091d2c6da79e37ef652abbacfcc3",
+    "Nescity_FPGA/eval/resources.py": "70cddb79466af26865dc49e4560625c896fe651bbdfd8f48c161cb3ea7a08f3d",
+    "Nescity_FPGA/eval/run.py": "ca63e63358a4a3c08487b530c71fbb72ee6ce26fc66eaec6a9182344b3f5b972",
+    "Nescity_FPGA/eval/sim_main.cpp": "89b77e7fefe969d485f611498c0bf13d36a789f1d74b99e7db588824f3e305c0",
+    "Nescity_FPGA/eval/train_patterns.py": "a0393acc96206a18408e3a64eb9a4f1d27e09a664eb594d9141bf084990f3ced"
+  }
+}

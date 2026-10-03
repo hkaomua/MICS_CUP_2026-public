@@ -1,0 +1,134 @@
+{
+  "tool": "Yosys 0.68+195 (git sha1 435977e97-dirty, Release, Clang /usr/local/osxcross/target/bin/aarch64-apple-darwin25.5-clang++ 21.1.8)",
+  "target": "10M08SAE144C8GES",
+  "caveat": "Experimental Yosys mapping, accelerator only; no Quartus fitting/timing. M9K count is inferred from unchanged 2048x8 dual-clock RAM, not mapped by Yosys.",
+  "baseline": {
+    "rtl_sha256": "4d59e60795b99920e59b7e27b7d867b6ae4e122f3712509823d17f656670cadb",
+    "logic_cells": 1015,
+    "flip_flops": 213,
+    "other_not_cells": 3,
+    "unpacked_logic_plus_ff": 1228,
+    "dsp_cells": 0,
+    "grid_ram_bits": 16384,
+    "expected_m9k_blocks": 2,
+    "unmapped_memories": [
+      {
+        "name": "city_grid_ram.ram",
+        "ABITS": 11,
+        "SIZE": 2048,
+        "WIDTH": 8,
+        "RD_PORTS": 2,
+        "WR_PORTS": 2,
+        "RD_CLK_ENABLE": 3,
+        "WR_CLK_ENABLE": 3
+      }
+    ]
+  },
+  "previous": {
+    "rtl_sha256": "2e4f054a3f756e00a390be6f4aabc0b390a6c062f8ece07ba5882fc97a7963b1",
+    "logic_cells": 1208,
+    "flip_flops": 530,
+    "other_not_cells": 3,
+    "unpacked_logic_plus_ff": 1738,
+    "dsp_cells": 0,
+    "grid_ram_bits": 16384,
+    "expected_m9k_blocks": 2,
+    "unmapped_memories": [
+      {
+        "name": "city_grid_ram.ram",
+        "ABITS": 11,
+        "SIZE": 2048,
+        "WIDTH": 8,
+        "RD_PORTS": 2,
+        "WR_PORTS": 2,
+        "RD_CLK_ENABLE": 3,
+        "WR_CLK_ENABLE": 3
+      }
+    ]
+  },
+  "optimized": {
+    "rtl_sha256": "a001dd15d1f3381050531900f2e49d10f922395bc91fa69fb9492a84d6930473",
+    "logic_cells": 1223,
+    "flip_flops": 514,
+    "other_not_cells": 3,
+    "unpacked_logic_plus_ff": 1737,
+    "dsp_cells": 0,
+    "grid_ram_bits": 16384,
+    "expected_m9k_blocks": 2,
+    "unmapped_memories": [
+      {
+        "name": "city_grid_ram.ram",
+        "ABITS": 11,
+        "SIZE": 2048,
+        "WIDTH": 8,
+        "RD_PORTS": 2,
+        "WR_PORTS": 2,
+        "RD_CLK_ENABLE": 3,
+        "WR_CLK_ENABLE": 3
+      }
+    ]
+  },
+  "date": "2026-09-06",
+  "baseline_git_ref": "a614553",
+  "branch": "fpga/max10-opt",
+  "reference_c_sha256": "c626cd51846c1e409640ec6084364570c39d026897c76f4a691f5e208bc4c23f",
+  "verilator": "Verilator 5.053 devel rev v5.052-22-g7cf8c5cca (mod)",
+  "iverilog": "Icarus Verilog 14.0 devel (s20260301-403-g5ab23063f-dirty)",
+  "quartus_fitter_verified": false,
+  "hardware_verified": false,
+  "previous_git_ref": "473ef3271c93024836159f93c6a7dc823d925abc",
+  "simulation": {
+    "baseline_smoke": "PASS cases=59 generations=132 calc_cycles_min=76804 calc_cycles_max=76804 cpu_half_ns=5",
+    "previous_smoke": "PASS cases=59 generations=132 calc_cycles_min=13084 calc_cycles_max=13084 cpu_half_ns=5 reset_recoveries=18",
+    "optimized_full": "PASS cases=355 generations=2058 calc_cycles_min=6400 calc_cycles_max=6400 cpu_half_ns=5 reset_recoveries=18",
+    "optimized_full_cpu_half_7ns": "PASS cases=355 generations=2058 calc_cycles_min=6400 calc_cycles_max=6401 cpu_half_ns=7 reset_recoveries=18",
+    "known_crc": {
+      "0": "37C2",
+      "256": "4963",
+      "512": "D350",
+      "768": "593A",
+      "1024": "EE30",
+      "1280": "1FC3"
+    },
+    "arithmetic": {
+      "divide65_inputs": 16576,
+      "force_delta_inputs": 326,
+      "bias_delta_pairs": 65536,
+      "clamp_pairs": 1280,
+      "passed": true
+    },
+    "four_state": {
+      "generations": 2,
+      "both_banks_checked": true,
+      "passed": true
+    },
+    "reset_recovery_offsets_calc_clocks": [
+      4,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      220,
+      221,
+      222,
+      223,
+      224,
+      6394,
+      6396,
+      6398
+    ]
+  },
+  "performance": {
+    "baseline_calc_clocks": 76804,
+    "previous_calc_clocks": 13084,
+    "optimized_calc_clocks": 6400,
+    "ratio": 12.000625,
+    "ratio_vs_previous": 2.044375,
+    "clock_hz": 10000000
+  }
+}
