@@ -1,0 +1,200 @@
+% Build with slides/build.sh (upLaTeX + dvipdfmx).
+% Theme: hkaomua/slide-template at 3d26f4f. FPGA evidence: 229aed0.
+\documentclass[dvipdfmx,aspectratio=169,t]{beamer}
+\usetheme{lineSeed}
+\usepackage{colortbl,array,amsmath,pgfplots,listings}
+\pgfplotsset{compat=1.18}
+\input{metrics.tex}
+\pdfstringdefDisableCommands{\def\translate#1{#1}}
+% Keep the upstream heading rule visible above table/plot content.
+\AddToHook{shipout/foreground}{%
+  \ifnum\value{page}>1\relax
+    \begin{tikzpicture}[remember picture,overlay]
+      \fill[SeedRule,rounded corners=0.850395bp]
+        ([xshift=36bp,yshift=-64.66732bp]current page.north west)
+        rectangle ([xshift=684bp,yshift=-66.36811bp]current page.north west);
+      \fill[SeedAccent,rounded corners=0.850395bp]
+        ([xshift=36bp,yshift=-64.66732bp]current page.north west)
+        rectangle ([xshift=87.02362bp,yshift=-66.36811bp]current page.north west);
+    \end{tikzpicture}%
+  \fi
+}
+\newcommand{\bigline}[1]{{\fontsize{24bp}{32bp}\selectfont\bfseries #1\par}}
+\newcommand{\intent}[1]{\noindent{\bfseries #1\par}\vspace{8bp}}
+\newcommand{\gap}{\par\vspace{8bp}}
+\newcommand{\smallbody}{\fontsize{14bp}{21bp}\selectfont}
+\newenvironment{datatable}{\begingroup\fontsize{16bp}{24bp}\selectfont\renewcommand{\arraystretch}{1.18}\setlength{\tabcolsep}{6bp}}{\endgroup}
+\newcommand{\headerline}{\arrayrulecolor{SeedAccent}\hline\arrayrulecolor{SeedRule}}
+\lstset{basicstyle=\ttfamily\fontsize{14bp}{21bp}\selectfont,columns=fullflexible,keepspaces=true,showstringspaces=false,breaklines=true,frame=none,aboveskip=4bp,belowskip=4bp}
+\title{Nescity FPGAの高速化}
+\author{あすた}
+\filename{MICSCUP\_2026\_Asta}
+\hypersetup{pdftitle={Nescity FPGAの高速化 5分版},pdfauthor={},pdfsubject={MAX10で計算サイクルを69.63倍改善したRTL評価},pdfkeywords={Nescity,FPGA,MAX10,MICS,229aed0}}
+
+\begin{document}
+
+% 01: 20 seconds. Use the template's original title layout.
+\seedtitleframe[36]
+
+% 02: 35 seconds
+\begin{frame}{計算内容と課題}
+\intent{隣のセルでも同じ近傍を読み直している}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{0.60\textwidth}
+32列 $\times$ 30行、合計960セル\par
+各セルの次世代を5 $\times$ 5近傍から計算\par
+\gap
+上下左右は反対側につながる。\par
+全セルは更新前の盤面を参照する。\par
+\gap
+\textbf{配布回路は24,000回の読出し}\par
+$960\times25$ セルを毎世代読み直す。
+\end{column}
+\begin{column}{0.34\textwidth}
+\textbf{近傍の重み}\par\vspace{4bp}
+{\renewcommand{\arraystretch}{0.85}
+$\begin{bmatrix}1&2&3&2&1\\2&3&4&3&2\\3&4&5&4&3\\2&3&4&3&2\\1&2&3&2&1\end{bmatrix}$}\par
+\gap
+$w=5-|dx|-|dy|$\par
+重みの合計は65
+\end{column}
+\end{columns}
+\end{frame}
+
+% 03: 55 seconds
+\begin{frame}{最適化(1/2)}
+\intent{重なる近傍を使い回して、読出しを減らす}
+\begin{datatable}
+\begin{tabular}{@{}p{0.21\textwidth}p{0.49\textwidth}r@{}}
+\textbf{段階} & \textbf{再利用するもの} & \textbf{読出し／世代}\\\headerline
+配布回路 & セルごとに25近傍を集計 & 24,000\\\hline
+列の再利用 & 5列のうち、重なる4列 & 5,400\\\hline
+4行バッファ & 縦5セルのうち、過去4行 & 1,208\\\hline
+行末の先読み & 行頭4列の集計 & \textcolor{SeedAccent}{\bfseries \FinalReads}\\\hline
+\end{tabular}
+\end{datatable}
+\gap
+追加の行バッファは\textbf{M9K 1個}、32ワード $\times$ 32 bit。\par
+行末では保存した4列を使い、その間に次の行を先読みする。
+\end{frame}
+
+% 04: 55 seconds
+\begin{frame}{最適化(2/2)}
+\intent{別のセルの処理を重ねて、1クロックに1セル進める}
+旧世代のバンクを読み、新世代のバンクへ同時に書く。\par
+グリッドの容量は2 KiBのまま、1 KiBずつに分割する。
+\gap
+\begin{datatable}
+\begin{tabular}{@{}lccccc@{}}
+\textbf{計算クロック} & \textbf{SUM} & \textbf{AVG} & \textbf{BIAS} & \textbf{新値} & \textbf{書込み}\\\headerline
+$n$   & セルE & セルD & セルC & セルB & \textcolor{SeedAccent}{\bfseries セルA}\\\hline
+$n+1$ & セルF & セルE & セルD & セルC & \textcolor{SeedAccent}{\bfseries セルB}\\\hline
+$n+2$ & セルG & セルF & セルE & セルD & \textcolor{SeedAccent}{\bfseries セルC}\\\hline
+\end{tabular}
+\end{datatable}
+\gap
+CPU側100 MHz・計算側10 MHzで、960セルを連続して書く。\par
+完了通知は最終セルの書込み後に送る。
+\end{frame}
+
+% 05: 35 seconds
+\begin{frame}{評価結果(1/2)}
+\intent{計算クロックは10 MHzのまま、配布回路から約70倍}
+\begin{datatable}
+\begin{tabular}{@{}p{0.46\textwidth}r@{\hspace{16bp}}r@{}}
+ & \textbf{配布回路} & \textbf{最適化後}\\\headerline
+計算クロック数／世代 & \BaseCycles & \textcolor{SeedAccent}{\bfseries \FinalCycles}\\\hline
+10 MHz換算 & \BaseMs\ ms & \textcolor{SeedAccent}{\bfseries \FinalMs\ ms}\\\hline
+配布回路に対する速度 & 1.00倍 & \FinalSpeedup 倍\\\hline
+\end{tabular}
+\end{datatable}
+\gap
+計算サイクルを\CycleReduction\%削減。
+\gap
+測定区間はMMIOのSTARTからBUSY解除まで。\par
+\textbf{描画やCRC処理を含む実機FPSは未測定。}
+\end{frame}
+
+% 06: 45 seconds
+\begin{frame}{評価結果(2/2)}
+\intent{QuartusでMAX10に収容できた。M9Kは残り2個}
+\begin{datatable}
+\begin{tabular}{@{}p{0.46\textwidth}r@{\hspace{16bp}}r@{}}
+\textbf{NES全体の資源} & \textbf{使用数／総数} & \textbf{使用率}\\\headerline
+LE & 6,020／8,064 & 75\%\\\hline
+FF & 2,573／8,064 & 32\%\\\hline
+M9K & \textcolor{SeedAccent}{\bfseries 40／42} & 95\%\\\hline
+DSP（9-bit要素） & 0／48 & 0\%\\\hline
+\end{tabular}
+\end{datatable}
+\gap
+対象はMAX10 \texttt{10M08SAE144C8GES}。\par
+アクセラレータのM9Kは\textbf{盤面2個＋行バッファ1個}。\par
+全体の配置配線とSOF生成に成功した。
+\end{frame}
+
+% 07: 55 seconds
+\begin{frame}{検証結果}
+\intent{C版との一致に加え、実機でも0500までハッシュが一致}
+\begin{itemize}\setlength{\itemsep}{4bp}
+\item C版と\TestCases 配置・\TestGenerations 世代の全960セルで一致
+\item 計算中の\ResetChecks 時点のリセットと、両バンクの照合を実施
+\item 実機でも\textbf{0500（1,280世代）までハッシュ一致}を確認
+\end{itemize}
+\gap
+{\smallbody
+配置配線後のSetup slack：10 MHz側 $+4.040$ ns、100 MHz側 $-2.246$ ns。\par
+100 MHz側にはタイミング違反が残る。}
+\gap
+\textbf{実装はこちら}\par
+\href{https://github.com/hkaomua/MICS_CUP_2026-public}{\textcolor{SeedAccent}{\texttt{github.com/hkaomua/MICS\_CUP\_2026-public}}}\par
+\end{frame}
+
+\appendix
+% A: optional
+\begin{frame}{付録：最適化の経過}
+\intent{読出しの再利用と処理の並行化を段階的に追加}
+\begin{tikzpicture}
+\begin{axis}[
+width=0.80\textwidth,height=165bp,xbar,bar width=15bp,
+xmin=0,xmax=82,xtick={0,20,40,60,80},
+ytick={1,2,3,4,5},yticklabels={配布回路,列の再利用,先読みと演算の並行化,4行バッファ,連続パイプライン},
+y dir=reverse,ymin=0.4,ymax=5.6,
+axis x line*=bottom,axis y line*=left,axis line style={SeedRule},
+xmajorgrids=true,grid style={SeedRule!40},tick style={draw=none},
+xlabel={配布回路に対する速度倍率},
+tick label style={font=\fontsize{12bp}{18bp}\selectfont},xlabel style={font=\fontsize{14bp}{21bp}\selectfont},
+nodes near coords,point meta=explicit symbolic,every node near coord/.append style={font=\fontsize{14bp}{21bp}\selectfont,anchor=west,color=black},
+]
+\addplot[fill=SeedAccent,draw=none] coordinates {
+(\StageARatio,1) [\StageALabel 倍]
+(\StageBRatio,2) [\StageBLabel 倍]
+(\StageCRatio,3) [\StageCLabel 倍]
+(\StageDRatio,4) [\StageDLabel 倍]
+(\StageERatio,5) [\StageELabel 倍]};
+\end{axis}
+\end{tikzpicture}
+\gap
+{\smallbody サイクル／世代：\StageACycles、\StageBCycles、\StageCCycles、\StageDCycles、\StageECycles。}
+\end{frame}
+
+% B: optional, proposal only
+\begin{frame}{付録：2セル並列化の案}
+\intent{残り2個のM9Kで約2倍を狙うが、ロジックが足りない可能性}
+盤面を偶数行・奇数行に分け、2セルを同時に読み書きする。\par
+読出し用・書込み用の盤面RAMを、合計2個から4個に増やす。
+\gap
+\begin{datatable}
+\begin{tabular}{@{}p{0.15\textwidth}p{0.33\textwidth}l@{}}
+\textbf{全体の資源} & \textbf{現在の使用量} & \textbf{2セル並列化の案}\\\headerline
+M9K & 40／42個（95\%） & 42／42個、空きなし\\\hline
+LE & 6,020／8,064（75\%） & 演算回路が増加、使用量は未算出\\\hline
+LAB & 444／504（88\%） & 配置の余裕も少ない\\\hline
+\end{tabular}
+\end{datatable}
+\gap
+目標は同じ10 MHzで\textbf{約1.8～2倍}。未実装・未検証。\par
+共通の演算を共有し、収容とタイミングが成立するかを確認する。
+\end{frame}
+
+\end{document}

@@ -1,0 +1,141 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{beamerthemelineSeed}[2026/10/02 Template.pdf with LINE Seed JP]
+\RequirePackage{iftex}
+\ifupTeX\else
+  \PackageError{beamerthemelineSeed}{Please compile with upLaTeX}{Use latexmk slides.tex.}
+\fi
+\RequirePackage{lmodern}
+\RequirePackage[LY1]{fontenc}
+\RequirePackage[uplatex,deluxe]{otf}
+\RequirePackage[noalphabet]{pxchfon}
+\RequirePackage{pxjahyper}
+\RequirePackage{tikz}
+\RequirePackage{etoolbox}
+\geometry{paperwidth=720bp,paperheight=405bp}
+
+% Fonts are loaded from files; no operating-system font installation is needed.
+\newcommand{\seedcheckfont}[1]{%
+  \IfFileExists{../fonts/LINESeedJP_OTF_#1.otf}{}{%
+    \PackageError{beamerthemelineSeed}{LINE Seed JP font #1 is missing}{%
+      See fonts/README.md. From the repository root, run:
+      node scripts/setup-fonts.mjs /path/to/LINESeedJP_20241105}%
+  }%
+}
+\seedcheckfont{Rg}\seedcheckfont{Bd}\seedcheckfont{Eb}
+\setminchofont{LINESeedJP_OTF_Rg.otf}
+\setboldminchofont{LINESeedJP_OTF_Bd.otf}
+\setgothicfont{LINESeedJP_OTF_Rg.otf}
+\setboldgothicfont{LINESeedJP_OTF_Bd.otf}
+\setxboldgothicfont{LINESeedJP_OTF_Eb.otf}
+\IfFileExists{../fonts/seed-rg.tfm}{}{%
+  \PackageError{beamerthemelineSeed}{LINE Seed JP metrics are missing}{%
+    Run python3 scripts/setup-uptex-fonts.py from the repository root.}}
+\DeclareFontFamily{LY1}{seed}{}
+\DeclareFontShape{LY1}{seed}{m}{n}{<-> seed-rg}{}
+\DeclareFontShape{LY1}{seed}{bx}{n}{<-> seed-bd}{}
+\DeclareFontShape{LY1}{seed}{eb}{n}{<-> seed-eb}{}
+\renewcommand{\bfdefault}{bx}
+\renewcommand{\rmdefault}{seed}
+\renewcommand{\sfdefault}{seed}
+\renewcommand{\kanjifamilydefault}{\gtdefault}
+\AtBeginDvi{%
+  \special{pdf:mapline seed-rg seed-rg-cmap LINESeedJP_OTF_Rg.otf}%
+  \special{pdf:mapline seed-bd seed-bd-cmap LINESeedJP_OTF_Bd.otf}%
+  \special{pdf:mapline seed-eb seed-eb-cmap LINESeedJP_OTF_Eb.otf}%
+}
+\newcommand{\seedExtraBold}{\sffamily\fontseries{eb}\selectfont}
+\newcommand{\seedCJKExtraBold}{\gtfamily\ebseries}
+\xkanjiskip=0pt plus 0.08em
+
+\definecolor{SeedAccent}{HTML}{1793D1}
+\definecolor{SeedRule}{HTML}{AAAAAA}
+\definecolor{SeedFooter}{HTML}{333333}
+\setbeamercolor{normal text}{fg=black,bg=white}
+\setbeamercolor{frametitle}{fg=black}
+\setbeamercolor{structure}{fg=black}
+\setbeamercolor{item}{fg=black}
+\setbeamercolor{alerted text}{fg=SeedAccent}
+\usefonttheme{professionalfonts}
+\setbeamerfont{normal text}{family=\sffamily,size=\fontsize{18bp}{27bp}}
+\setbeamerfont{frametitle}{family=\sffamily,series=\bfseries,size=\fontsize{24bp}{36bp}}
+\setbeamerfont{itemize/enumerate body}{size=\fontsize{18bp}{27bp}}
+\setbeamerfont{itemize/enumerate subbody}{size=\fontsize{14bp}{21bp}}
+\setbeamerfont{itemize/enumerate subsubbody}{size=\fontsize{14bp}{21bp}}
+\setbeamersize{text margin left=35.084645bp,text margin right=35.084645bp}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{headline}{}
+\setbeamertemplate{footline}{\vspace{30bp}}
+\setbeamertemplate{background canvas}[default]
+
+\newcommand{\seedfilename}{スライド記入例}
+\newcommand{\filename}[1]{\renewcommand{\seedfilename}{#1}}
+\newif\ifseedcover
+\seedcoverfalse
+\setbeamertemplate{background}{%
+  \begin{tikzpicture}[remember picture,overlay]
+    \fill[SeedFooter] ([yshift=-384.59448bp]current page.north west)
+      rectangle (current page.south east);
+    \fill[SeedAccent] ([yshift=-382.32678bp]current page.north west)
+      rectangle ([yshift=-384.59448bp]current page.north east);
+    \node[anchor=base west,inner sep=0pt,outer sep=0pt,text=white,
+      font=\sffamily\fontsize{8bp}{12bp}\selectfont]
+      at ([xshift=10.098425bp,yshift=-397.11108bp]current page.north west)
+      {\seedfilename};
+    \ifseedcover\else
+      \node[anchor=base east,inner sep=0pt,outer sep=0pt,text=white,
+        font=\sffamily\fontsize{8bp}{12bp}\selectfont]
+        at ([xshift=-13.159607bp,yshift=-397.6788bp]current page.north east)
+        {\insertframenumber};
+    \fi
+  \end{tikzpicture}%
+}
+
+\setbeamertemplate{frametitle}{%
+  \begin{tikzpicture}[remember picture,overlay]
+    \node[anchor=base west,inner sep=0pt,outer sep=0pt,font=\usebeamerfont{frametitle}]
+      at ([xshift=35.084645bp,yshift=-46.201416bp]current page.north west)
+      {\insertframetitle};
+    \fill[SeedRule,rounded corners=0.850395bp]
+      ([xshift=36bp,yshift=-64.66732bp]current page.north west)
+      rectangle ([xshift=684bp,yshift=-66.36811bp]current page.north west);
+    \fill[SeedAccent,rounded corners=0.850395bp]
+      ([xshift=36bp,yshift=-64.66732bp]current page.north west)
+      rectangle ([xshift=87.02362bp,yshift=-66.36811bp]current page.north west);
+  \end{tikzpicture}%
+  \vspace{47.738bp}% Reserved space above the normal Beamer content flow.
+}
+
+\setlength{\leftmargini}{36bp}
+\setlength{\leftmarginii}{36bp}
+\setlength{\leftmarginiii}{36bp}
+\setlength{\labelsep}{20bp}
+\setbeamertemplate{itemize item}{%
+  \raisebox{1.2bp}{\tikz\fill (0,0) circle[radius=3.7bp];}}
+\setbeamertemplate{itemize subitem}{%
+  \raisebox{1bp}{\tikz\draw[line width=0.55bp] (0,0) circle[radius=2.425bp];}}
+\setbeamertemplate{itemize subsubitem}{\usebeamertemplate{itemize subitem}}
+\makeatletter
+\def\@listi{\leftmargin\leftmargini\topsep0pt\parsep0pt\itemsep0pt}
+\def\@listii{\leftmargin\leftmarginii\topsep0pt\parsep0pt\itemsep0pt}
+\def\@listiii{\leftmargin\leftmarginiii\topsep0pt\parsep0pt\itemsep0pt}
+\makeatother
+\AtBeginDocument{\usebeamerfont{normal text}}
+
+% Optional argument: title size in bp; use 36 for a longer title.
+\newcommand{\seedtitleframe}[1][52]{%
+  \begingroup
+  \seedcovertrue
+  \begin{frame}[plain]
+    \begin{tikzpicture}[remember picture,overlay]
+      \node[anchor=base,inner sep=0pt,
+        font=\seedExtraBold\seedCJKExtraBold\fontsize{#1bp}{72bp}\selectfont]
+        at ([xshift=352.73652bp,yshift=-201.01999bp]current page.north west)
+        {\inserttitle};
+      \node[anchor=base,inner sep=0pt,
+        font=\sffamily\fontsize{20bp}{30bp}\selectfont]
+        at ([xshift=360.01248bp,yshift=-249.10945bp]current page.north west)
+        {\insertauthor};
+    \end{tikzpicture}
+  \end{frame}
+  \endgroup
+}

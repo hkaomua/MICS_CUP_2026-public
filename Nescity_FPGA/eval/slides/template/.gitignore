@@ -1,0 +1,6 @@
+# Font binaries and generated metrics follow the upstream repository policy.
+fonts/**
+!fonts/README.md
+!fonts/OFL.txt
+beamer/build/
+scripts/__pycache__/
