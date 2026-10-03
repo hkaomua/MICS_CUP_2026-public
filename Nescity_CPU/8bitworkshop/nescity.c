@@ -1,12 +1,13 @@
 #include "neslib.h"
+#include <string.h>
 
 //#link "city_tiles_chr_direct.s"
 //#link "city_draw_direct_vblank6_asm.s"
 //#link "city_crc16_asm.s"
 
 /*
-  Hybrid version:
-    - simulation code is kept in C, based on nes_city_260518.c
+  CPU version:
+    - simulation uses C and inline 6502 assembly in this file
     - display uses direct-tile CHR and VBlank-split ASM redraw
     - city_compute_asm_fixed.s is intentionally NOT linked, to reduce PRG ROM size
 */
@@ -70,16 +71,7 @@
 
 #define FRAME_DELAY 6
 
-/*
-  FPGA cartridge WRAM mapping:
-    $6000-$7FFF : 8 KiB WRAM
-    $6000-$63BF : grid[0..959]
-
-  grid is intentionally not allocated in the normal cc65 BSS/RAM area.
-  It directly references the first 960 bytes of cartridge WRAM.
-*/
-#define WRAM_BASE 0x6000u
-//#define grid ((volatile unsigned char *)WRAM_BASE)
+/* CPU division: grid and rolling rows live in the 2 KiB internal RAM. */
 unsigned char grid[960];
 
 /*
@@ -157,7 +149,7 @@ unsigned char water_penalty;
   ID bytes are first cleared while the address range is still ordinary WRAM.
   This makes a failed unlock deterministic on the FPGA implementation.
   If the accelerator is absent, the program falls back to the original C
-  simulation (assuming $6000 cartridge RAM is available).
+  simulation in internal RAM.
 */
 unsigned char city_accel_try_enable(void) {
   accel_debug_code = 10;
@@ -297,61 +289,6 @@ unsigned char clamp_u8(signed int v, unsigned char lo, unsigned char hi) {
   return (unsigned char)v;
 }
 
-unsigned char is_urban(unsigned char v) {
-  return (v >= 35 && v <= 100);
-}
-
-unsigned char is_house(unsigned char v) {
-  return (v >= 35 && v <= 62);
-}
-
-unsigned char is_shop(unsigned char v) {
-  return (v >= 63 && v <= 78);
-}
-
-unsigned char is_tall(unsigned char v) {
-  return (v >= 79 && v <= 100);
-}
-
-unsigned char is_natural(unsigned char v) {
-  return (v >= 1 && v <= 24);
-}
-
-/* 5x5 Manhattan-distance weight.
-   center=5, distance1=4, distance2=3, distance3=2, distance4=1 */
-unsigned char weight5(signed char dx, signed char dy) {
-  signed char d;
-  d = dx;
-  if (d < 0) d = -d;
-  if (dy < 0) d += -dy;
-  else d += dy;
-  if (d >= 4) return 1;
-  return (unsigned char)(5 - d);
-}
-
-signed int influence_of(unsigned char v, unsigned char w) {
-  
-//  if (v == SEA) return -3 * (signed int)w;
-//  if (v <= 1) return -3 * (signed int)w;   /* mountain */
-//  if (v <= 14) return -1 * (signed int)w;  /* forest */
-//  if (v <= 24) return 0;                   /* grass */
-//  if (v <= 34) return 1 * (signed int)w;   /* field */
-//  if (v <= 49) return 2 * (signed int)w;   /* house */
-//  if (v <= 62) return 3 * (signed int)w;   /* apartment */
-//  if (v <= 78) return 4 * (signed int)w;   /* shop */
-//  return 5 * (signed int)w;                /* building */
-
-  if (v == SEA) return 3 * (signed int)w;
-  if (v <= 1) return -2 * (signed int)w;   /* mountain */
-  if (v <= 14) return -2 * (signed int)w;  /* forest */
-  if (v <= 24) return 2;                   /* grass */
-  if (v <= 34) return 1 * (signed int)w;   /* field */
-  if (v <= 49) return 2 * (signed int)w;   /* house */
-  if (v <= 62) return 3 * (signed int)w;   /* apartment */
-  if (v <= 78) return 2 * (signed int)w;   /* shop */
-  return 1 * (signed int)w;                /* building */
-}
-
 /*
   CRC-16/CCITT-FALSE over grid[0..959], implemented in 6502 assembly.
   ca65/cc65 returns unsigned int in A(low)/X(high).
@@ -365,31 +302,11 @@ unsigned char bg_tile_for_value(unsigned char v) {
 }
 
 void copy_row_to(unsigned char *dst, unsigned char row) {
-  unsigned char x;
-  unsigned int base;
-  base = ((unsigned int)row) * W;
-  for (x = 0; x < W; ++x) dst[x] = grid[base + x];
+  memcpy(dst, grid + (unsigned int)row * W, W);
 }
 
 void copy_row_from(unsigned char row, unsigned char *src) {
-  unsigned char x;
-  unsigned int base;
-  base = ((unsigned int)row) * W;
-  for (x = 0; x < W; ++x) grid[base + x] = src[x];
-}
-
-/* Read previous-step value while rows are being overwritten.
-   When computing bottom rows, row 0 and row 1 may already have been overwritten,
-   so read saved copies from top_rows. */
-unsigned char get_old_cell(signed char x, signed char y, unsigned char current_y) {
-  unsigned char xx;
-  unsigned char yy;
-  xx = wrap_x(x);
-  yy = wrap_y(y);
-  if (current_y >= H - 2 && yy < 2) {
-    return top_rows[yy][xx];
-  }
-  return grid[((unsigned int)yy) * W + xx];
+  memcpy(grid + (unsigned int)row * W, src, W);
 }
 
 void set_cell(signed char x, signed char y, unsigned char v) {
@@ -464,163 +381,1224 @@ void make_initial(void) {
   set_cell(27, 10, 63);
 }
 
-void compute_water_penalty(void) {
-  unsigned int i;
-  unsigned int sea_count;
-  unsigned int demand;
-  unsigned int capacity;
-  unsigned char v;
+/* CPU hot loop: constant-weight ROM tables replace 6502 multiplication and
+   repeated classification calls. Six independent byte counters track kinds.
+   Grass (15..24) contributes exactly 2, independent of the weight.
+   Force tables add 2*weight, making column sums unsigned bytes. Across the
+   full 65-weight neighborhood this adds 130, removed by city_force_delta.
+   Keep these tables in ROM: the CPU board has only 2 KiB of internal RAM. */
+static const unsigned char city_force1[101] = {
+  5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4,
+  4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3,
+};
+static const unsigned char city_force2[101] = {
+  10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 8,
+  8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+  8, 8, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+  10, 10, 10, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+  8, 8, 8, 8, 8, 8, 8, 6, 6, 6, 6, 6,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  6, 6, 6, 6, 6,
+};
+static const unsigned char city_force3[101] = {
+  15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+  8, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 12,
+  12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+  12, 12, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
+  15, 15, 15, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+  12, 12, 12, 12, 12, 12, 12, 9, 9, 9, 9, 9,
+  9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+  9, 9, 9, 9, 9,
+};
 
-  sea_count = 0;
-  demand = 0;
+/* Change of influence when weight increases by one, plus the unsigned bias 2.
+   Grass has true slope zero, so its entry is 2, not city_force1[grass]. */
+static const unsigned char city_force_slope[101] = {
+  5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+  2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4,
+  4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3,
+};
+static const unsigned char city_kind[101] = {
+  0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+  2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+  2, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 3,
+  3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5,
+  5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  5, 5, 5, 5, 5,
+};
+/* Exact summaries for a column whose five input values are equal. */
+static const unsigned char city_uniform_value_lo[101] = {
+  0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55,
+  60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115,
+  120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175,
+  180, 185, 190, 195, 200, 205, 210, 215, 220, 225, 230, 235,
+  240, 245, 250, 255, 4, 9, 14, 19, 24, 29, 34, 39,
+  44, 49, 54, 59, 64, 69, 74, 79, 84, 89, 94, 99,
+  104, 109, 114, 119, 124, 129, 134, 139, 144, 149, 154, 159,
+  164, 169, 174, 179, 184, 189, 194, 199, 204, 209, 214, 219,
+  224, 229, 234, 239, 244,
+};
+static const unsigned char city_uniform_value_hi[101] = {
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1,
+};
+static const unsigned char city_uniform_weighted_lo[101] = {
+  0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90, 99,
+  108, 117, 126, 135, 144, 153, 162, 171, 180, 189, 198, 207,
+  216, 225, 234, 243, 252, 5, 14, 23, 32, 41, 50, 59,
+  68, 77, 86, 95, 104, 113, 122, 131, 140, 149, 158, 167,
+  176, 185, 194, 203, 212, 221, 230, 239, 248, 1, 10, 19,
+  28, 37, 46, 55, 64, 73, 82, 91, 100, 109, 118, 127,
+  136, 145, 154, 163, 172, 181, 190, 199, 208, 217, 226, 235,
+  244, 253, 6, 15, 24, 33, 42, 51, 60, 69, 78, 87,
+  96, 105, 114, 123, 132,
+};
+static const unsigned char city_uniform_weighted_hi[101] = {
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2,
+  2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+  2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+  2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3,
+};
+static const unsigned char city_uniform_force[101] = {
+  25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+  10, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 20,
+  20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20,
+  20, 20, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25,
+  25, 25, 25, 20, 20, 20, 20, 20, 20, 20, 20, 20,
+  20, 20, 20, 20, 20, 20, 20, 15, 15, 15, 15, 15,
+  15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
+  15, 15, 15, 15, 15,
+};
+static const unsigned char city_uniform_weighted_force[101] = {
+  45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 28, 28, 28, 28, 28, 28, 28, 28, 28,
+  28, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 36,
+  36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36,
+  36, 36, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45,
+  45, 45, 45, 36, 36, 36, 36, 36, 36, 36, 36, 36,
+  36, 36, 36, 36, 36, 36, 36, 27, 27, 27, 27, 27,
+  27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27,
+  27, 27, 27, 27, 27,
+};
 
-  for (i = 0; i < N; ++i) {
-    v = grid[i];
-    if (v == SEA) ++sea_count;
-    else if (v >= 35 && v <= 49) demand += 1;
-    else if (v >= 50 && v <= 62) demand += 2;
-    else if (v >= 63 && v <= 78) demand += 3;
-    else if (v >= 79) demand += 6;
-  }
+static const unsigned char city_is_house[101] = {
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0,
+};
+static const unsigned char city_ring_next[5] = {1, 2, 3, 4, 0};
 
-  capacity = sea_count * WATER_PER_SEA;
-  if (demand > capacity) water_penalty = (unsigned char)((demand - capacity) / WATER_PENALTY_SCALE);
-  else water_penalty = 0;
+/* Fixed-rule arithmetic tables: no general multiply/divide in sim_step. */
+#if W != 32 || H != 30 || N != 960 || SEA != 0 || MOUNTAIN != 1 || \
+    FORCE_THRESHOLD != 20 || FORCE_SCALE != 20 || \
+    CAPACITY_LIMIT != 55 || CAPACITY_SCALE != 3 || OVERCROWDING_DECAY != 4 || \
+    MAX_RISE != 1 || MAX_FALL != 3 || DECLINE_STRENGTH != 1 || \
+    NATURE_DECAY != 1 || NATURE_RECOVERY != 1
+#error Update the fixed-rule tables and assembly when changing simulation constants
+#endif
+/* Exact floor(n/65), for all weighted sums 0..6500. */
+#define CITY_FIVE(v) v,v,v,v,v
+#define CITY_SIXTYFIVE(v) CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v),CITY_FIVE(v)
+static const unsigned char city_average_table[6501] = {
+  CITY_SIXTYFIVE(0), CITY_SIXTYFIVE(1), CITY_SIXTYFIVE(2), CITY_SIXTYFIVE(3), CITY_SIXTYFIVE(4),
+  CITY_SIXTYFIVE(5), CITY_SIXTYFIVE(6), CITY_SIXTYFIVE(7), CITY_SIXTYFIVE(8), CITY_SIXTYFIVE(9),
+  CITY_SIXTYFIVE(10), CITY_SIXTYFIVE(11), CITY_SIXTYFIVE(12), CITY_SIXTYFIVE(13), CITY_SIXTYFIVE(14),
+  CITY_SIXTYFIVE(15), CITY_SIXTYFIVE(16), CITY_SIXTYFIVE(17), CITY_SIXTYFIVE(18), CITY_SIXTYFIVE(19),
+  CITY_SIXTYFIVE(20), CITY_SIXTYFIVE(21), CITY_SIXTYFIVE(22), CITY_SIXTYFIVE(23), CITY_SIXTYFIVE(24),
+  CITY_SIXTYFIVE(25), CITY_SIXTYFIVE(26), CITY_SIXTYFIVE(27), CITY_SIXTYFIVE(28), CITY_SIXTYFIVE(29),
+  CITY_SIXTYFIVE(30), CITY_SIXTYFIVE(31), CITY_SIXTYFIVE(32), CITY_SIXTYFIVE(33), CITY_SIXTYFIVE(34),
+  CITY_SIXTYFIVE(35), CITY_SIXTYFIVE(36), CITY_SIXTYFIVE(37), CITY_SIXTYFIVE(38), CITY_SIXTYFIVE(39),
+  CITY_SIXTYFIVE(40), CITY_SIXTYFIVE(41), CITY_SIXTYFIVE(42), CITY_SIXTYFIVE(43), CITY_SIXTYFIVE(44),
+  CITY_SIXTYFIVE(45), CITY_SIXTYFIVE(46), CITY_SIXTYFIVE(47), CITY_SIXTYFIVE(48), CITY_SIXTYFIVE(49),
+  CITY_SIXTYFIVE(50), CITY_SIXTYFIVE(51), CITY_SIXTYFIVE(52), CITY_SIXTYFIVE(53), CITY_SIXTYFIVE(54),
+  CITY_SIXTYFIVE(55), CITY_SIXTYFIVE(56), CITY_SIXTYFIVE(57), CITY_SIXTYFIVE(58), CITY_SIXTYFIVE(59),
+  CITY_SIXTYFIVE(60), CITY_SIXTYFIVE(61), CITY_SIXTYFIVE(62), CITY_SIXTYFIVE(63), CITY_SIXTYFIVE(64),
+  CITY_SIXTYFIVE(65), CITY_SIXTYFIVE(66), CITY_SIXTYFIVE(67), CITY_SIXTYFIVE(68), CITY_SIXTYFIVE(69),
+  CITY_SIXTYFIVE(70), CITY_SIXTYFIVE(71), CITY_SIXTYFIVE(72), CITY_SIXTYFIVE(73), CITY_SIXTYFIVE(74),
+  CITY_SIXTYFIVE(75), CITY_SIXTYFIVE(76), CITY_SIXTYFIVE(77), CITY_SIXTYFIVE(78), CITY_SIXTYFIVE(79),
+  CITY_SIXTYFIVE(80), CITY_SIXTYFIVE(81), CITY_SIXTYFIVE(82), CITY_SIXTYFIVE(83), CITY_SIXTYFIVE(84),
+  CITY_SIXTYFIVE(85), CITY_SIXTYFIVE(86), CITY_SIXTYFIVE(87), CITY_SIXTYFIVE(88), CITY_SIXTYFIVE(89),
+  CITY_SIXTYFIVE(90), CITY_SIXTYFIVE(91), CITY_SIXTYFIVE(92), CITY_SIXTYFIVE(93), CITY_SIXTYFIVE(94),
+  CITY_SIXTYFIVE(95), CITY_SIXTYFIVE(96), CITY_SIXTYFIVE(97), CITY_SIXTYFIVE(98), CITY_SIXTYFIVE(99),
+  100
+};
+#undef CITY_SIXTYFIVE
+#undef CITY_FIVE
+static const signed char city_house_bias[26] = {
+  -3,-3,2,2,4,4,4,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6
+};
+static const unsigned char city_capacity_loss[101] = {
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4,
+  4, 8, 8, 8, 12, 12, 12, 16, 16, 16, 20, 20,
+  20, 24, 24, 24, 28, 28, 28, 32, 32, 32, 36, 36,
+  36, 40, 40, 40, 44, 44, 44, 48, 48, 48, 52, 52,
+  52, 56, 56, 56, 60,
+};
+static const signed char city_force_delta[326] = {
+  -7, -7, -7, -7, -7, -7, -7, -7, -7, -7, -7, -6,
+  -6, -6, -6, -6, -6, -6, -6, -6, -6, -6, -6, -6,
+  -6, -6, -6, -6, -6, -6, -6, -5, -5, -5, -5, -5,
+  -5, -5, -5, -5, -5, -5, -5, -5, -5, -5, -5, -5,
+  -5, -5, -5, -4, -4, -4, -4, -4, -4, -4, -4, -4,
+  -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -3,
+  -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3,
+  -3, -3, -3, -3, -3, -3, -3, -2, -2, -2, -2, -2,
+  -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2,
+  -2, -2, -2, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2,
+  2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+  2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+  3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5,
+  5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8,
+  8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+  8, 8,
+};
+
+/* Relocatable row addresses; cc65 emits these pointers into PRG ROM. */
+static unsigned char * const city_grid_rows[H] = {
+  grid + 0, grid + 32, grid + 64, grid + 96, grid + 128, grid + 160,
+  grid + 192, grid + 224, grid + 256, grid + 288, grid + 320, grid + 352,
+  grid + 384, grid + 416, grid + 448, grid + 480, grid + 512, grid + 544,
+  grid + 576, grid + 608, grid + 640, grid + 672, grid + 704, grid + 736,
+  grid + 768, grid + 800, grid + 832, grid + 864, grid + 896, grid + 928,
+};
+static unsigned char * const city_next_rows[3] = {next_rows[0], next_rows[1], next_rows[2]};
+static unsigned char * const city_saved_rows[2] = {top_rows[0], top_rows[1]};
+
+/* Hot-loop scratch uses linker-allocated zero page, leaving more of
+   $0300..$07FF available to the C stack. This function is non-reentrant;
+   NMI does not call it. Every value is assigned before use. The NES linker
+   checks this allocation together with the runtime/neslib zero-page data. */
+#pragma bss-name (push, "ZEROPAGE", "zp")
+static unsigned char row_x, row_y, row_yy, row_self, row_avg;
+static unsigned char *city_old_rows[5];
+static unsigned int row_raw_force; /* force + 130, range 0..325 */
+static unsigned int row_weighted_sum;
+static unsigned char row_bias; /* signed delta + 128 */
+static unsigned char *city_output, *city_math_ptr;
+static unsigned char window_counts[6];
+static unsigned char row_urban;
+static unsigned char row_natural_pressure;
+/* Five reusable column summaries (74 bytes including the duplicated prefix).
+   Vertical weights are 1,2,3,2,1.
+   Weighted population <=900, biased force <=45; plain population <=500 and
+   biased force <=25. Each category count is <=5. Low/high arrays avoid a
+   runtime multiply-by-two when indexing words. */
+static unsigned char col_value_lo[8], col_value_hi[8];
+static unsigned char col_weighted_value_lo[5], col_weighted_value_hi[5];
+static unsigned char col_force[8], col_weighted_force[5];
+static unsigned char col_counts[6][5];
+static unsigned char col_uniform[5]; /* 255 for mixed or uninitialized columns */
+static unsigned int window_value;
+static unsigned char window_force;
+static unsigned char row_slot, row_column_x;
+static unsigned int new_value, new_weighted_value;
+static unsigned char new_force, new_weighted_force, new_counts[7];
+static unsigned char column_samples[5], column_pair;
+static unsigned char row_house_columns[36], row_pending, city_next_slot, row_last_active;
+#pragma bss-name (pop)
+
+/* Unsigned force bias: +2 per unit weight. Column force fits in a byte:
+   plain 0..25, weighted 0..45; window_force 0..225. The final force index
+   includes +130. X indexes ROM tables; Y stays at the input column. */
+#pragma optimize (push, off)
+void city_slide_column(void) {
+  __asm__("ldy %v", row_column_x);
+  /* This shortcut depends only on the five inputs, for every value 0..100. */
+  __asm__("lda (%v),y", city_old_rows);
+  __asm__("sta %v", column_samples);
+  __asm__("tax");
+  __asm__("lda (%v+2),y", city_old_rows);
+  __asm__("cmp %v", column_samples);
+  __asm__("bne %g", mixed_column);
+  __asm__("lda (%v+4),y", city_old_rows);
+  __asm__("cmp %v", column_samples);
+  __asm__("bne %g", mixed_column);
+  __asm__("lda (%v+6),y", city_old_rows);
+  __asm__("cmp %v", column_samples);
+  __asm__("bne %g", mixed_column);
+  __asm__("lda (%v+8),y", city_old_rows);
+  __asm__("cmp %v", column_samples);
+  __asm__("bne %g", mixed_column);
+  /* Equal incoming/outgoing columns leave every window summary unchanged,
+     including the duplicated prefix used by fixed-offset cell reads. */
+  __asm__("ldy %v", row_slot);
+  __asm__("txa");
+  __asm__("cmp %v,y", col_uniform);
+  __asm__("bne %g", changed_uniform_column);
+  __asm__("rts");
+changed_uniform_column:
+  __asm__("sta %v,y", col_uniform);
+  __asm__("lda #0");
+  __asm__("sta %v+0", new_counts);
+  __asm__("sta %v+1", new_counts);
+  __asm__("sta %v+2", new_counts);
+  __asm__("sta %v+3", new_counts);
+  __asm__("sta %v+4", new_counts);
+  __asm__("sta %v+5", new_counts);
+  __asm__("sta %v+6", new_counts);
+  __asm__("lda %v,x", city_uniform_value_lo);
+  __asm__("sta %v", new_value);
+  __asm__("lda %v,x", city_uniform_value_hi);
+  __asm__("sta %v+1", new_value);
+  __asm__("lda %v,x", city_uniform_weighted_lo);
+  __asm__("sta %v", new_weighted_value);
+  __asm__("lda %v,x", city_uniform_weighted_hi);
+  __asm__("sta %v+1", new_weighted_value);
+  __asm__("lda %v,x", city_uniform_force);
+  __asm__("sta %v", new_force);
+  __asm__("lda %v,x", city_uniform_weighted_force);
+  __asm__("sta %v", new_weighted_force);
+  __asm__("lda %v,x", city_kind);
+  __asm__("tax");
+  __asm__("lda #5");
+  __asm__("sta %v,x", new_counts);
+  __asm__("jmp %g", update_window);
+mixed_column:
+  __asm__("lda #0");
+  __asm__("sta %v+0", new_counts);
+  __asm__("sta %v+1", new_counts);
+  __asm__("sta %v+2", new_counts);
+  __asm__("sta %v+3", new_counts);
+  __asm__("sta %v+4", new_counts);
+  __asm__("sta %v+5", new_counts);
+  __asm__("sta %v+6", new_counts);
+  __asm__("ldx %v", row_slot);
+  __asm__("lda #255");
+  __asm__("sta %v,x", col_uniform);
+  __asm__("clc");
+  /* Input row 0, vertical weight 1. */
+  __asm__("lda (%v+0),y", city_old_rows);
+  __asm__("sta %v+0", column_samples);
+  __asm__("tax");
+  __asm__("lda %v,x", city_force_slope);
+  __asm__("sta %v", new_force);
+  __asm__("lda %v,x", city_force1);
+  __asm__("sta %v", new_weighted_force);
+  __asm__("lda %v,x", city_kind);
+  __asm__("tax");
+  __asm__("inc %v,x", new_counts);
+  /* Input row 1, vertical weight 2. */
+  __asm__("lda (%v+2),y", city_old_rows);
+  __asm__("sta %v+1", column_samples);
+  __asm__("tax");
+  __asm__("lda %v,x", city_force_slope);
+  __asm__("adc %v", new_force);
+  __asm__("sta %v", new_force);
+  __asm__("lda %v,x", city_force2);
+  __asm__("adc %v", new_weighted_force);
+  __asm__("sta %v", new_weighted_force);
+  __asm__("lda %v,x", city_kind);
+  __asm__("tax");
+  __asm__("inc %v,x", new_counts);
+  /* Input row 2, vertical weight 3. */
+  __asm__("lda (%v+4),y", city_old_rows);
+  __asm__("sta %v+2", column_samples);
+  __asm__("tax");
+  __asm__("lda %v,x", city_force_slope);
+  __asm__("adc %v", new_force);
+  __asm__("sta %v", new_force);
+  __asm__("lda %v,x", city_force3);
+  __asm__("adc %v", new_weighted_force);
+  __asm__("sta %v", new_weighted_force);
+  __asm__("lda %v,x", city_kind);
+  __asm__("tax");
+  __asm__("inc %v,x", new_counts);
+  /* Input row 3, vertical weight 2. */
+  __asm__("lda (%v+6),y", city_old_rows);
+  __asm__("sta %v+3", column_samples);
+  __asm__("tax");
+  __asm__("lda %v,x", city_force_slope);
+  __asm__("adc %v", new_force);
+  __asm__("sta %v", new_force);
+  __asm__("lda %v,x", city_force2);
+  __asm__("adc %v", new_weighted_force);
+  __asm__("sta %v", new_weighted_force);
+  __asm__("lda %v,x", city_kind);
+  __asm__("tax");
+  __asm__("inc %v,x", new_counts);
+  /* Input row 4, vertical weight 1. */
+  __asm__("lda (%v+8),y", city_old_rows);
+  __asm__("sta %v+4", column_samples);
+  __asm__("tax");
+  __asm__("lda %v,x", city_force_slope);
+  __asm__("adc %v", new_force);
+  __asm__("sta %v", new_force);
+  __asm__("lda %v,x", city_force1);
+  __asm__("adc %v", new_weighted_force);
+  __asm__("sta %v", new_weighted_force);
+  __asm__("lda %v,x", city_kind);
+  __asm__("tax");
+  __asm__("inc %v,x", new_counts);
+  /* Symmetric pairs <=200 never carry. X holds the word's high byte;
+     increment it only when a low-byte addition actually overflows. */
+  __asm__("ldx #0");
+  __asm__("lda %v", column_samples);
+  __asm__("clc");
+  __asm__("adc %v+4", column_samples);
+  __asm__("sta %v", column_pair);
+  __asm__("lda %v+1", column_samples);
+  __asm__("adc %v+3", column_samples);
+  __asm__("sta %v", new_weighted_value);
+  __asm__("adc %v", column_pair);
+  __asm__("bcc %g", plain_pair_no_carry);
+  __asm__("inx");
+plain_pair_no_carry:
+  __asm__("clc");
+  __asm__("adc %v+2", column_samples);
+  __asm__("bcc %g", plain_no_carry);
+  __asm__("inx");
+plain_no_carry:
+  __asm__("sta %v", new_value);
+  __asm__("stx %v+1", new_value);
+  __asm__("lda %v+2", column_samples);
+  __asm__("asl a");
+  __asm__("adc %v", new_weighted_value);
+  __asm__("bcc %g", weighted_pair_no_carry);
+  __asm__("inx");
+weighted_pair_no_carry:
+  __asm__("clc");
+  __asm__("adc %v", new_value);
+  __asm__("bcc %g", weighted_no_carry);
+  __asm__("inx");
+weighted_no_carry:
+  __asm__("sta %v", new_weighted_value);
+  __asm__("stx %v+1", new_weighted_value);
+update_window:
+  /* Apply each changed count's signed difference modulo 256. The true total
+     is always 0..25, so discarding the byte carry gives the exact result. */
+  __asm__("ldx %v", row_slot);
+  __asm__("lda %v+0", new_counts);
+  __asm__("cmp %v+0,x", col_counts);
+  __asm__("beq %g", count_0_unchanged);
+  __asm__("sec");
+  __asm__("sbc %v+0,x", col_counts);
+  __asm__("clc");
+  __asm__("adc %v+0", window_counts);
+  __asm__("sta %v+0", window_counts);
+  __asm__("lda %v+0", new_counts);
+  __asm__("sta %v+0,x", col_counts);
+count_0_unchanged:
+  __asm__("lda %v+1", new_counts);
+  __asm__("cmp %v+5,x", col_counts);
+  __asm__("beq %g", count_1_unchanged);
+  __asm__("sec");
+  __asm__("sbc %v+5,x", col_counts);
+  __asm__("clc");
+  __asm__("adc %v+1", window_counts);
+  __asm__("sta %v+1", window_counts);
+  __asm__("lda %v+1", new_counts);
+  __asm__("sta %v+5,x", col_counts);
+count_1_unchanged:
+  __asm__("lda %v+2", new_counts);
+  __asm__("cmp %v+10,x", col_counts);
+  __asm__("beq %g", count_2_unchanged);
+  __asm__("sec");
+  __asm__("sbc %v+10,x", col_counts);
+  __asm__("clc");
+  __asm__("adc %v+2", window_counts);
+  __asm__("sta %v+2", window_counts);
+  __asm__("lda %v+2", new_counts);
+  __asm__("sta %v+10,x", col_counts);
+count_2_unchanged:
+  __asm__("lda %v+3", new_counts);
+  __asm__("cmp %v+15,x", col_counts);
+  __asm__("beq %g", count_3_unchanged);
+  __asm__("sec");
+  __asm__("sbc %v+15,x", col_counts);
+  __asm__("clc");
+  __asm__("adc %v+3", window_counts);
+  __asm__("sta %v+3", window_counts);
+  __asm__("lda %v+3", new_counts);
+  __asm__("sta %v+15,x", col_counts);
+count_3_unchanged:
+  __asm__("lda %v+4", new_counts);
+  __asm__("cmp %v+20,x", col_counts);
+  __asm__("beq %g", count_4_unchanged);
+  __asm__("sec");
+  __asm__("sbc %v+20,x", col_counts);
+  __asm__("clc");
+  __asm__("adc %v+4", window_counts);
+  __asm__("sta %v+4", window_counts);
+  __asm__("lda %v+4", new_counts);
+  __asm__("sta %v+20,x", col_counts);
+count_4_unchanged:
+  __asm__("lda %v+5", new_counts);
+  __asm__("cmp %v+25,x", col_counts);
+  __asm__("beq %g", count_5_unchanged);
+  __asm__("sec");
+  __asm__("sbc %v+25,x", col_counts);
+  __asm__("clc");
+  __asm__("adc %v+5", window_counts);
+  __asm__("sta %v+5", window_counts);
+  __asm__("lda %v+5", new_counts);
+  __asm__("sta %v+25,x", col_counts);
+count_5_unchanged:
+  __asm__("lda %v", window_force);
+  __asm__("sec");
+  __asm__("sbc %v,x", col_weighted_force);
+  __asm__("clc");
+  __asm__("adc %v", new_weighted_force);
+  __asm__("sta %v", window_force);
+  __asm__("lda %v", new_weighted_force);
+  __asm__("sta %v,x", col_weighted_force);
+  __asm__("lda %v", new_force);
+  __asm__("sta %v,x", col_force);
+  __asm__("lda %v", window_value);
+  __asm__("sec");
+  __asm__("sbc %v,x", col_weighted_value_lo);
+  __asm__("sta %v", window_value);
+  __asm__("lda %v+1", window_value);
+  __asm__("sbc %v,x", col_weighted_value_hi);
+  __asm__("sta %v+1", window_value);
+  __asm__("lda %v", window_value);
+  __asm__("clc");
+  __asm__("adc %v", new_weighted_value);
+  __asm__("sta %v", window_value);
+  __asm__("lda %v+1", window_value);
+  __asm__("adc %v+1", new_weighted_value);
+  __asm__("sta %v+1", window_value);
+  __asm__("lda %v", new_weighted_value);
+  __asm__("sta %v,x", col_weighted_value_lo);
+  __asm__("lda %v+1", new_weighted_value);
+  __asm__("sta %v,x", col_weighted_value_hi);
+  __asm__("lda %v", new_value);
+  __asm__("sta %v,x", col_value_lo);
+  __asm__("lda %v+1", new_value);
+  __asm__("sta %v,x", col_value_hi);
+  /* Fixed +1,+2,+3 accesses may cross the end of the five-column ring. */
+  __asm__("cpx #3");
+  __asm__("bcs %g", column_complete);
+  __asm__("lda %v", new_force);
+  __asm__("sta %v+5,x", col_force);
+  __asm__("lda %v", new_value);
+  __asm__("sta %v+5,x", col_value_lo);
+  __asm__("lda %v+1", new_value);
+  __asm__("sta %v+5,x", col_value_hi);
+column_complete:
+  __asm__("rts");
+}
+#pragma optimize (pop)
+
+/* These assembly functions use only the ordinary 6502 instruction set.
+   Disable cc65's C optimizer across each block so carry and register lifetime
+   follow the instruction sequence, including across C labels. */
+#pragma optimize (push, off)
+void city_compute_average(void) {
+  __asm__("lda %v", row_weighted_sum);
+  __asm__("clc");
+  __asm__("adc #<%v", city_average_table);
+  __asm__("sta %v", city_math_ptr);
+  __asm__("lda %v+1", row_weighted_sum);
+  __asm__("adc #>%v", city_average_table);
+  __asm__("sta %v+1", city_math_ptr);
+  __asm__("ldy #0");
+  __asm__("lda (%v),y", city_math_ptr);
+  __asm__("sta %v", row_avg);
 }
 
+void city_reset_columns(void) {
+  __asm__("lda #0");
+  __asm__("sta %v", window_force);
+  __asm__("sta %v", window_value);
+  __asm__("sta %v+1", window_value);
+  __asm__("sta %v+0", window_counts);
+  __asm__("sta %v+1", window_counts);
+  __asm__("sta %v+2", window_counts);
+  __asm__("sta %v+3", window_counts);
+  __asm__("sta %v+4", window_counts);
+  __asm__("sta %v+5", window_counts);
+  __asm__("ldx #4");
+reset_column:
+  __asm__("sta %v+0,x", col_counts);
+  __asm__("sta %v+5,x", col_counts);
+  __asm__("sta %v+10,x", col_counts);
+  __asm__("sta %v+15,x", col_counts);
+  __asm__("sta %v+20,x", col_counts);
+  __asm__("sta %v+25,x", col_counts);
+  __asm__("sta %v,x", col_weighted_force);
+  __asm__("sta %v,x", col_weighted_value_lo);
+  __asm__("sta %v,x", col_weighted_value_hi);
+  __asm__("dex");
+  __asm__("bpl %g", reset_column);
+  __asm__("lda #255");
+  __asm__("sta %v", col_uniform);
+  __asm__("sta %v+1", col_uniform);
+  __asm__("sta %v+2", col_uniform);
+  __asm__("sta %v+3", col_uniform);
+  __asm__("sta %v+4", col_uniform);
+}
+
+/* The average can improve a cell's unbounded delta by at most one; capacity
+   loss never improves it. Saturated declines (and non-growing value-1 cells)
+   therefore do not need the weighted population or average at all. */
+void city_finish_cell(void) {
+  /* Assemble force+130. All horizontal terms together are <=100. */
+  __asm__("ldx %v", row_slot);
+  __asm__("lda %v+2,x", col_force);
+  __asm__("asl a");
+  __asm__("adc %v+1,x", col_force);
+  __asm__("adc %v+3,x", col_force);
+  __asm__("adc %v", window_force);
+  __asm__("sta %v", row_raw_force);
+  __asm__("tay");
+  __asm__("lda #0");
+  __asm__("adc #0");
+  __asm__("sta %v+1", row_raw_force);
+  __asm__("beq %g", force_low);
+  __asm__("lda %v+256,y", city_force_delta);
+  __asm__("jmp %g", force_loaded);
+force_low:
+  __asm__("lda %v,y", city_force_delta);
+force_loaded:
+  __asm__("eor #128");
+  __asm__("sta %v", row_bias);
+  /* Exact local bias, kept biased by 128 to use unsigned comparisons. */
+  __asm__("lda %v+3", window_counts);
+  __asm__("clc");
+  __asm__("adc %v+4", window_counts);
+  __asm__("adc %v+5", window_counts);
+  __asm__("sta %v", row_urban);
+  __asm__("lda %v", row_self);
+  __asm__("cmp #2");
+  __asm__("bcs %g", not_mountain);
+  __asm__("lda %v", row_bias);
+  __asm__("sec");
+  __asm__("sbc #4");
+  __asm__("sta %v", row_bias);
+not_mountain:
+  __asm__("lda %v", row_self);
+  __asm__("cmp #35");
+  __asm__("bcc %g", natural_cell);
+  __asm__("jmp %g", urban_cell);
+natural_cell:
+  __asm__("ldx %v+3", window_counts);
+  __asm__("lda %v,x", city_house_bias);
+  __asm__("clc");
+  __asm__("adc %v", row_bias);
+  __asm__("sta %v", row_bias);
+  __asm__("cpx #3");
+  __asm__("bcc %g", no_natural_shop);
+  __asm__("lda %v+4", window_counts);
+  __asm__("beq %g", no_natural_shop);
+  __asm__("inc %v", row_bias);
+no_natural_shop:
+  __asm__("lda %v", window_counts);
+  __asm__("cmp #4");
+  __asm__("bcc %g", no_sea_loss);
+  __asm__("lda %v", row_bias);
+  __asm__("sec");
+  __asm__("sbc #2");
+  __asm__("sta %v", row_bias);
+no_sea_loss:
+  __asm__("lda %v+1", window_counts);
+  __asm__("cmp #3");
+  __asm__("bcc %g", no_mountain_loss);
+  __asm__("cpx #4");
+  __asm__("bcs %g", no_mountain_loss);
+  __asm__("lda %v", row_bias);
+  __asm__("sec");
+  __asm__("sbc #3");
+  __asm__("sta %v", row_bias);
+no_mountain_loss:
+  __asm__("lda %v+1", row_raw_force);
+  __asm__("bne %g", bias_ready);
+  __asm__("lda %v", row_self);
+  __asm__("cmp #25");
+  __asm__("bcc %g", no_recovery);
+  __asm__("lda %v", row_urban);
+  __asm__("cmp #3");
+  __asm__("bcs %g", no_recovery);
+  __asm__("lda %v", row_raw_force);
+  __asm__("cmp #142");
+  __asm__("bcs %g", no_recovery);
+  __asm__("dec %v", row_bias);
+no_recovery:
+  __asm__("lda %v", row_raw_force);
+  __asm__("cmp #145");
+  __asm__("bcs %g", bias_ready);
+  __asm__("dec %v", row_bias);
+  __asm__("jmp %g", bias_ready);
+urban_cell:
+  __asm__("cmp #63");
+  __asm__("bcs %g", shop_or_tall);
+  __asm__("lda %v+4", window_counts);
+  __asm__("beq %g", no_house_shop);
+  __asm__("inc %v", row_bias);
+  __asm__("inc %v", row_bias);
+no_house_shop:
+  __asm__("lda %v+5", window_counts);
+  __asm__("cmp #2");
+  __asm__("bcc %g", decline);
+  __asm__("inc %v", row_bias);
+  __asm__("jmp %g", decline);
+shop_or_tall:
+  __asm__("lda %v+4", window_counts);
+  __asm__("clc");
+  __asm__("adc %v+5", window_counts);
+  __asm__("cmp #4");
+  __asm__("bcc %g", decline);
+  __asm__("inc %v", row_bias);
+  __asm__("inc %v", row_bias);
+decline:
+  __asm__("lda %v", row_urban);
+  __asm__("cmp #5");
+  __asm__("bcs %g", no_isolation);
+  __asm__("lda %v", row_bias);
+  __asm__("clc");
+  __asm__("adc %v", row_urban);
+  __asm__("sec");
+  __asm__("sbc #5");
+  __asm__("sta %v", row_bias);
+no_isolation:
+  /* Natural excludes mountain in the cached category; its total coefficient is 3. */
+  __asm__("lda %v+1", window_counts);
+  __asm__("asl a");
+  __asm__("adc %v+1", window_counts);
+  __asm__("adc %v+2", window_counts);
+  __asm__("sta %v", row_natural_pressure);
+  __asm__("lda %v", window_counts);
+  __asm__("asl a");
+  __asm__("adc %v", row_natural_pressure);
+  __asm__("lsr a");
+  __asm__("lsr a");
+  __asm__("lsr a");
+  __asm__("lsr a");
+  __asm__("eor #255");
+  __asm__("sec");
+  __asm__("adc %v", row_bias);
+  __asm__("sta %v", row_bias);
+  /* A water subtraction that underflows biased zero is already saturated decline. */
+  __asm__("sec");
+  __asm__("sbc %v", water_penalty);
+  __asm__("bcs %g", water_no_underflow);
+  __asm__("lda #0");
+water_no_underflow:
+  __asm__("sta %v", row_bias);
+bias_ready:
+  __asm__("lda %v", row_bias);
+  __asm__("cmp #125");
+  __asm__("bcs %g", not_saturated);
+  __asm__("jmp %g", maximum_fall);
+not_saturated:
+  __asm__("lda %v", row_self);
+  __asm__("cmp #1");
+  __asm__("bne %g", need_average);
+  __asm__("lda %v", row_bias);
+  __asm__("cmp #128");
+  __asm__("bcs %g", need_average);
+  __asm__("jmp %g", value_one);
+need_average:
+  /* Reconstruct weighted population: window + left + 2*center + right. */
+  __asm__("ldx %v", row_slot);
+  __asm__("lda %v", window_value);
+  __asm__("clc");
+  __asm__("adc %v+1,x", col_value_lo);
+  __asm__("sta %v", row_weighted_sum);
+  __asm__("lda %v+1", window_value);
+  __asm__("adc %v+1,x", col_value_hi);
+  __asm__("sta %v+1", row_weighted_sum);
+  __asm__("lda %v+2,x", col_value_lo);
+  __asm__("asl a");
+  __asm__("sta %v", new_value);
+  __asm__("lda %v+2,x", col_value_hi);
+  __asm__("rol a");
+  __asm__("sta %v+1", new_value);
+  __asm__("lda %v", row_weighted_sum);
+  __asm__("clc");
+  __asm__("adc %v", new_value);
+  __asm__("sta %v", row_weighted_sum);
+  __asm__("lda %v+1", row_weighted_sum);
+  __asm__("adc %v+1", new_value);
+  __asm__("sta %v+1", row_weighted_sum);
+  __asm__("lda %v", row_weighted_sum);
+  __asm__("clc");
+  __asm__("adc %v+3,x", col_value_lo);
+  __asm__("sta %v", row_weighted_sum);
+  __asm__("lda %v+1", row_weighted_sum);
+  __asm__("adc %v+3,x", col_value_hi);
+  __asm__("sta %v+1", row_weighted_sum);
+  __asm__("jsr %v", city_compute_average);
+  __asm__("ldx %v", row_avg);
+  __asm__("lda %v", row_bias);
+  __asm__("sec");
+  __asm__("sbc %v,x", city_capacity_loss);
+  __asm__("sta %v", row_bias);
+  __asm__("lda %v", row_avg);
+  __asm__("sec");
+  __asm__("sbc %v", row_self);
+  __asm__("bcc %g", average_lower);
+  __asm__("cmp #13");
+  __asm__("bcc %g", final_delta);
+  __asm__("inc %v", row_bias);
+  __asm__("jmp %g", final_delta);
+average_lower:
+  __asm__("cmp #236");
+  __asm__("bcs %g", final_delta);
+  __asm__("dec %v", row_bias);
+final_delta:
+  __asm__("lda %v", row_bias);
+  __asm__("cmp #129");
+  __asm__("bcs %g", rise);
+  __asm__("cmp #125");
+  __asm__("bcs %g", bounded_fall);
+maximum_fall:
+  __asm__("lda #125");
+bounded_fall:
+  __asm__("sec");
+  __asm__("sbc #128");
+  __asm__("clc");
+  __asm__("adc %v", row_self);
+  __asm__("cmp #101");
+  __asm__("bcc %g", nonwrapped_value);
+value_one:
+  __asm__("lda #1");
+  __asm__("jmp %g", store_cell);
+nonwrapped_value:
+  __asm__("cmp #0");
+  __asm__("bne %g", store_cell);
+  __asm__("lda #1");
+  __asm__("jmp %g", store_cell);
+rise:
+  __asm__("lda %v", row_self);
+  __asm__("cmp #100");
+  __asm__("bcs %g", store_cell);
+  __asm__("adc #1");
+store_cell:
+  __asm__("ldy %v", row_x);
+  __asm__("sta (%v),y", city_output);
+}
+#pragma optimize (pop)
+
+
+void city_duplicate_house_columns(void);
+/* Maintain exact house counts for the five old rows. Advance before the
+   oldest row is overwritten; saved top rows handle vertical wraparound. */
+#pragma optimize (push, off)
+void city_mark_house_columns(void) {
+  __asm__("ldy #31");
+mark_house_column:
+  __asm__("lda #0");
+  __asm__("sta %v", column_pair);
+  __asm__("lda (%v+0),y", city_old_rows);
+  __asm__("tax");
+  __asm__("lda %v,x", city_is_house);
+  __asm__("clc");
+  __asm__("adc %v", column_pair);
+  __asm__("sta %v", column_pair);
+  __asm__("lda (%v+2),y", city_old_rows);
+  __asm__("tax");
+  __asm__("lda %v,x", city_is_house);
+  __asm__("clc");
+  __asm__("adc %v", column_pair);
+  __asm__("sta %v", column_pair);
+  __asm__("lda (%v+4),y", city_old_rows);
+  __asm__("tax");
+  __asm__("lda %v,x", city_is_house);
+  __asm__("clc");
+  __asm__("adc %v", column_pair);
+  __asm__("sta %v", column_pair);
+  __asm__("lda (%v+6),y", city_old_rows);
+  __asm__("tax");
+  __asm__("lda %v,x", city_is_house);
+  __asm__("clc");
+  __asm__("adc %v", column_pair);
+  __asm__("sta %v", column_pair);
+  __asm__("lda (%v+8),y", city_old_rows);
+  __asm__("tax");
+  __asm__("lda %v,x", city_is_house);
+  __asm__("clc");
+  __asm__("adc %v", column_pair);
+  __asm__("sta %v", column_pair);
+  __asm__("sta %v,y", row_house_columns);
+  __asm__("dey");
+  __asm__("bpl %g", mark_house_column);
+  __asm__("jmp %v", city_duplicate_house_columns);
+}
+
+void city_duplicate_house_columns(void) {
+  __asm__("ldx #3");
+duplicate_house_column:
+  __asm__("lda %v,x", row_house_columns);
+  __asm__("sta %v+32,x", row_house_columns);
+  __asm__("dex");
+  __asm__("bpl %g", duplicate_house_column);
+}
+
+void city_advance_house_columns(void) {
+  __asm__("lda %v", row_y);
+  __asm__("clc");
+  __asm__("adc #3");
+  __asm__("cmp #30");
+  __asm__("bcc %g", incoming_grid);
+  __asm__("sbc #30");
+  __asm__("asl a");
+  __asm__("tax");
+  __asm__("lda %v,x", city_saved_rows);
+  __asm__("sta %v", city_math_ptr);
+  __asm__("lda %v+1,x", city_saved_rows);
+  __asm__("jmp %g", incoming_high);
+incoming_grid:
+  __asm__("asl a");
+  __asm__("tax");
+  __asm__("lda %v,x", city_grid_rows);
+  __asm__("sta %v", city_math_ptr);
+  __asm__("lda %v+1,x", city_grid_rows);
+incoming_high:
+  __asm__("sta %v+1", city_math_ptr);
+  __asm__("ldy #31");
+advance_house_column:
+  __asm__("lda (%v),y", city_old_rows);
+  __asm__("cmp (%v),y", city_math_ptr);
+  __asm__("beq %g", same_house_count);
+  __asm__("tax");
+  __asm__("lda %v,x", city_is_house);
+  __asm__("sta %v", column_pair);
+  __asm__("lda (%v),y", city_math_ptr);
+  __asm__("tax");
+  __asm__("lda %v,x", city_is_house);
+  __asm__("cmp %v", column_pair);
+  __asm__("beq %g", same_house_count);
+  __asm__("clc");
+  __asm__("adc %v,y", row_house_columns);
+  __asm__("sec");
+  __asm__("sbc %v", column_pair);
+  __asm__("sta %v,y", row_house_columns);
+same_house_count:
+  __asm__("dey");
+  __asm__("bpl %g", advance_house_column);
+  __asm__("jmp %v", city_duplicate_house_columns);
+}
+#pragma optimize (pop)
+
+/* Y retains the horizontal position across fixed cells. Only active cells
+   publish row_x; city_finish_cell restores Y before returning. The first
+   active cell subtracts the modulo-byte sentinel -5, giving x+5 (5..36). */
+#pragma optimize (push, off)
+void city_compute_row(void) {
+  __asm__("ldy #31");
+check_sea_row:
+  __asm__("lda (%v+4),y", city_old_rows);
+  __asm__("bne %g", land_row);
+  __asm__("dey");
+  __asm__("bpl %g", check_sea_row);
+  __asm__("ldy #31");
+clear_sea_row:
+  __asm__("sta (%v),y", city_output);
+  __asm__("dey");
+  __asm__("bpl %g", clear_sea_row);
+  __asm__("rts");
+land_row:
+  __asm__("lda #251");
+  __asm__("sta %v", row_last_active);
+  __asm__("ldy #0");
+next_cell:
+  __asm__("lda (%v+4),y", city_old_rows);
+  __asm__("bne %g", nonsea_cell);
+  __asm__("jmp %g", fixed_cell);
+nonsea_cell:
+  __asm__("sta %v", row_self);
+  /* With <2 houses a mountain cannot grow. If seas>=4, the maximum
+     pre-average delta is 7-4-3-2=-2. Otherwise force<=110+4*4=126,
+     giving at most 5-4-3=-2. Average adds at most one; capacity only
+     subtracts. Clamping to the minimum land value therefore returns 1. */
+  __asm__("cmp #1");
+  __asm__("bne %g", active_cell);
+  __asm__("tya");
+  __asm__("clc");
+  __asm__("adc #30");
+  __asm__("and #31");
+  __asm__("tax");
+  __asm__("clc");
+  __asm__("lda %v+0,x", row_house_columns);
+  __asm__("adc %v+1,x", row_house_columns);
+  __asm__("adc %v+2,x", row_house_columns);
+  __asm__("adc %v+3,x", row_house_columns);
+  __asm__("adc %v+4,x", row_house_columns);
+  __asm__("cmp #2");
+  __asm__("bcs %g", active_cell);
+  __asm__("lda #1");
+  __asm__("jmp %g", fixed_cell);
+active_cell:
+  /* A gap >=5 needs five replacements; shorter gaps reuse overlap.
+     The old five summaries still sum to the cached window, even across
+     row changes. Replacing all five removes every stale contribution. */
+  __asm__("sty %v", row_x);
+  __asm__("tya");
+  __asm__("sec");
+  __asm__("sbc %v", row_last_active);
+  __asm__("cmp #5");
+  __asm__("bcc %g", reuse_window);
+  __asm__("lda #5");
+reuse_window:
+  __asm__("sta %v", row_pending);
+  __asm__("sty %v", row_last_active);
+  __asm__("lda %v", row_x);
+  __asm__("clc");
+  __asm__("adc #3");
+  __asm__("sec");
+  __asm__("sbc %v", row_pending);
+  __asm__("and #31");
+  __asm__("sta %v", row_column_x);
+catch_up_window:
+  __asm__("jsr %v", city_slide_column);
+  __asm__("ldx %v", row_slot);
+  __asm__("lda %v,x", city_ring_next);
+  __asm__("sta %v", row_slot);
+  __asm__("dec %v", row_pending);
+  __asm__("beq %g", window_ready);
+  __asm__("lda %v", row_column_x);
+  __asm__("clc");
+  __asm__("adc #1");
+  __asm__("and #31");
+  __asm__("sta %v", row_column_x);
+  __asm__("jmp %g", catch_up_window);
+window_ready:
+  __asm__("jsr %v", city_finish_cell);
+  __asm__("jmp %g", advance_column);
+fixed_cell:
+  __asm__("sta (%v),y", city_output);
+advance_column:
+  __asm__("iny");
+  __asm__("cpy #32");
+  __asm__("bcs %g", row_done);
+  __asm__("jmp %g", next_cell);
+row_done:
+  __asm__("rts");
+}
+#pragma optimize (pop)
+
+/* Resolve vertical torus and saved old rows once, before any row writeback. */
+#pragma optimize (push, off)
+void city_prepare_rows(void) {
+  __asm__("lda %v", row_y);
+  __asm__("sec");
+  __asm__("sbc #2");
+  __asm__("bcs %g", valid_first_row);
+  __asm__("clc");
+  __asm__("adc #30");
+valid_first_row:
+  __asm__("sta %v", row_yy);
+  __asm__("ldy #0");
+prepare_row:
+  __asm__("lda %v", row_yy);
+  __asm__("asl a");
+  __asm__("tax");
+  __asm__("lda %v", row_y);
+  __asm__("cmp #28");
+  __asm__("bcc %g", use_grid_row);
+  __asm__("cpx #4");
+  __asm__("bcs %g", use_grid_row);
+  __asm__("lda %v,x", city_saved_rows);
+  __asm__("sta %v,y", city_old_rows);
+  __asm__("lda %v+1,x", city_saved_rows);
+  __asm__("jmp %g", row_address_high);
+use_grid_row:
+  __asm__("lda %v,x", city_grid_rows);
+  __asm__("sta %v,y", city_old_rows);
+  __asm__("lda %v+1,x", city_grid_rows);
+row_address_high:
+  __asm__("sta %v+1,y", city_old_rows);
+  __asm__("lda %v", row_yy);
+  __asm__("clc");
+  __asm__("adc #1");
+  __asm__("cmp #30");
+  __asm__("bcc %g", next_old_row);
+  __asm__("lda #0");
+next_old_row:
+  __asm__("sta %v", row_yy);
+  __asm__("iny");
+  __asm__("iny");
+  __asm__("cpy #10");
+  __asm__("bcc %g", prepare_row);
+}
+#pragma optimize (pop)
+
 void compute_next_row(unsigned char y, unsigned char *out) {
-  unsigned char x;
-  signed char dx, dy;
-  unsigned char self, v, w;
-  signed int raw_force;
-  signed int weighted_sum;
-  signed int weight_sum;
-  signed int avg;
-  signed int bias;
-  signed int delta;
-  signed int newv;
-  unsigned char sea, mountain, natural, urban, house, shop, tall;
-  unsigned char isolation, natural_pressure;
-  signed int over_capacity;
+  city_output = out;
+  row_y = y;
+  city_prepare_rows();
+  if (y == 0) city_mark_house_columns();
+  city_compute_row();
+  if (y < 29) city_advance_house_columns();
+}
 
-  for (x = 0; x < W; ++x) {
-    self = get_old_cell((signed char)x, (signed char)y, y);
-    if (self == SEA) {
-      out[x] = SEA;
-      continue;
-    }
 
-    raw_force = 0;
-    weighted_sum = 0;
-    weight_sum = 0;
-    sea = mountain = natural = urban = house = shop = tall = 0;
-
-    for (dy = -2; dy <= 2; ++dy) {
-      for (dx = -2; dx <= 2; ++dx) {
-        v = get_old_cell((signed char)x + dx, (signed char)y + dy, y);
-        w = weight5(dx, dy);
-        raw_force += influence_of(v, w);
-        weighted_sum += (signed int)v * (signed int)w;
-        weight_sum += w;
-
-        if (v == SEA) ++sea;
-        if (v <= 1 && v != SEA) ++mountain;
-        if (is_natural(v)) ++natural;
-        if (is_urban(v)) ++urban;
-        if (is_house(v)) ++house;
-        if (is_shop(v)) ++shop;
-        if (is_tall(v)) ++tall;
-      }
-    }
-
-    avg = weighted_sum / weight_sum;
-    bias = 0;
-
-    if (self <= 1) bias -= 4;
-
-    /* Natural land develops only when nearby housing exists. */
-    if (self >= 1 && self <= 34) {
-      if (house >= 2) bias += 2;
-      if (house >= 4) bias += 2;
-      if (house >= 7) bias += 2;
-      if (shop >= 1 && house >= 3) bias += 1;
-      if (sea >= 4) bias -= 2;
-      if (mountain >= 3 && house < 4) bias -= 3;
-      if (house < 2) bias -= 3;
-    }
-
-    if (self >= 35 && self <= 62) {
-      if (shop >= 1) bias += 2;
-      if (tall >= 2) bias += 1;
-    }
-
-    if (self >= 63) {
-      if (shop + tall >= 4) bias += 2;
-    }
-
-    /* Decline: isolation, nature, water shortage. */
-    if (self >= 35) {
-      isolation = (urban < 5) ? (5 - urban) : 0;
-      natural_pressure = natural + sea * 2 + mountain * 2;
-      bias -= DECLINE_STRENGTH * isolation;
-      bias -= NATURE_DECAY * (natural_pressure / 16);
-      bias -= water_penalty;
-    }
-
-    /* Generic overcrowding pressure, not a building-specific rule. */
-    over_capacity = avg - CAPACITY_LIMIT;
-    if (over_capacity > 0) {
-      bias -= (over_capacity / CAPACITY_SCALE) * OVERCROWDING_DECAY;
-    }
-
-    if (self >= 25 && self < 35 && urban < 3 && raw_force < 12) {
-      bias -= NATURE_RECOVERY;
-    }
-    if (raw_force < 15 && self < 35) bias -= 1;
-
-    delta = (raw_force - FORCE_THRESHOLD) / FORCE_SCALE + bias;
-    if (avg > (signed int)self + 12) ++delta;
-    if (avg < (signed int)self - 20) --delta;
-
-    if (delta > MAX_RISE) delta = MAX_RISE;
-    if (delta < -MAX_FALL) delta = -MAX_FALL;
-
-    newv = (signed int)self + delta;
-    if (newv < 1) newv = 1;
-    if (newv > 100) newv = 100;
-
-    /* Mountain can develop only slowly. */
-    if (self <= 1 && newv > 8) newv = 8;
-
-    out[x] = (unsigned char)newv;
-  }
+/* Fixed 32-byte, non-overlapping row copy. Eight bytes per loop remove
+   generic memcpy setup and most loop branches, with ordinary 6502 opcodes. */
+#pragma optimize (push, off)
+void city_copy32(void) {
+  __asm__("ldy #31");
+copy_eight:
+  __asm__("lda (%v),y", city_output);
+  __asm__("sta (%v),y", city_math_ptr);
+  __asm__("dey");
+  __asm__("lda (%v),y", city_output);
+  __asm__("sta (%v),y", city_math_ptr);
+  __asm__("dey");
+  __asm__("lda (%v),y", city_output);
+  __asm__("sta (%v),y", city_math_ptr);
+  __asm__("dey");
+  __asm__("lda (%v),y", city_output);
+  __asm__("sta (%v),y", city_math_ptr);
+  __asm__("dey");
+  __asm__("lda (%v),y", city_output);
+  __asm__("sta (%v),y", city_math_ptr);
+  __asm__("dey");
+  __asm__("lda (%v),y", city_output);
+  __asm__("sta (%v),y", city_math_ptr);
+  __asm__("dey");
+  __asm__("lda (%v),y", city_output);
+  __asm__("sta (%v),y", city_math_ptr);
+  __asm__("dey");
+  __asm__("lda (%v),y", city_output);
+  __asm__("sta (%v),y", city_math_ptr);
+  __asm__("dey");
+  __asm__("bpl %g", copy_eight);
 }
 
 void sim_step(void) {
-  unsigned char y;
-
-//  compute_water_penalty();
-
-  /* Save top rows before any writeback, for vertical wraparound near the bottom. */
-  copy_row_to(top_rows[0], 0);
-  copy_row_to(top_rows[1], 1);
-
-  for (y = 0; y < H; ++y) {
-    compute_next_row(y, next_rows[y % 3]);
-
-    /* Row y-2 will never again be needed as an old row, except rows 0/1 at bottom,
-       and those are already saved in top_rows. */
-    if (y >= 2) {
-      copy_row_from(y - 2, next_rows[(y - 2) % 3]);
-    }
-  }
-
-  /* Flush remaining bottom rows. */
-  copy_row_from(28, next_rows[28 % 3]);
-  copy_row_from(29, next_rows[29 % 3]);
-
-  ++step_count;
+  /* Save both old top rows before any writeback. House and column caches
+     are reset once per generation; row order and three-row staging stay
+     identical to the original simultaneous update. */
+  __asm__("ldy #63");
+save_top_rows:
+  __asm__("lda %v,y", grid);
+  __asm__("sta %v,y", top_rows);
+  __asm__("dey");
+  __asm__("bpl %g", save_top_rows);
+  __asm__("jsr %v", city_reset_columns);
+  __asm__("lda #0");
+  __asm__("sta %v", row_slot);
+  __asm__("sta %v", row_y);
+  __asm__("sta %v", city_next_slot);
+  __asm__("jsr %v", city_prepare_rows);
+  __asm__("jsr %v", city_mark_house_columns);
+next_output_row:
+  __asm__("lda %v", city_next_slot);
+  __asm__("asl a");
+  __asm__("tax");
+  __asm__("lda %v,x", city_next_rows);
+  __asm__("sta %v", city_output);
+  __asm__("lda %v+1,x", city_next_rows);
+  __asm__("sta %v+1", city_output);
+  __asm__("jsr %v", city_compute_row);
+  __asm__("lda %v", row_y);
+  __asm__("cmp #29");
+  __asm__("bcs %g", last_house_row);
+  __asm__("jsr %v", city_advance_house_columns);
+last_house_row:
+  __asm__("inc %v", city_next_slot);
+  __asm__("lda %v", city_next_slot);
+  __asm__("cmp #3");
+  __asm__("bcc %g", slot_ready);
+  __asm__("lda #0");
+  __asm__("sta %v", city_next_slot);
+slot_ready:
+  __asm__("lda %v", row_y);
+  __asm__("cmp #2");
+  __asm__("bcc %g", no_writeback);
+  __asm__("sbc #2");
+  __asm__("asl a");
+  __asm__("tax");
+  __asm__("lda %v,x", city_grid_rows);
+  __asm__("sta %v", city_math_ptr);
+  __asm__("lda %v+1,x", city_grid_rows);
+  __asm__("sta %v+1", city_math_ptr);
+  __asm__("lda %v", city_next_slot);
+  __asm__("asl a");
+  __asm__("tax");
+  __asm__("lda %v,x", city_next_rows);
+  __asm__("sta %v", city_output);
+  __asm__("lda %v+1,x", city_next_rows);
+  __asm__("sta %v+1", city_output);
+  __asm__("jsr %v", city_copy32);
+no_writeback:
+  __asm__("inc %v", row_y);
+  __asm__("lda %v", row_y);
+  __asm__("cmp #30");
+  __asm__("bcs %g", flush_rows);
+  __asm__("jsr %v", city_prepare_rows);
+  __asm__("jmp %g", next_output_row);
+flush_rows:
+  __asm__("lda #<(%v+32)", next_rows);
+  __asm__("sta %v", city_output);
+  __asm__("lda #>(%v+32)", next_rows);
+  __asm__("sta %v+1", city_output);
+  __asm__("lda #<(%v+896)", grid);
+  __asm__("sta %v", city_math_ptr);
+  __asm__("lda #>(%v+896)", grid);
+  __asm__("sta %v+1", city_math_ptr);
+  __asm__("jsr %v", city_copy32);
+  __asm__("lda #<(%v+64)", next_rows);
+  __asm__("sta %v", city_output);
+  __asm__("lda #>(%v+64)", next_rows);
+  __asm__("sta %v+1", city_output);
+  __asm__("lda #<(%v+928)", grid);
+  __asm__("sta %v", city_math_ptr);
+  __asm__("lda #>(%v+928)", grid);
+  __asm__("sta %v+1", city_math_ptr);
+  __asm__("jsr %v", city_copy32);
+  __asm__("inc %v", step_count);
+  __asm__("bne %g", step_done);
+  __asm__("inc %v+1", step_count);
+step_done:
+  __asm__("rts");
 }
+#pragma optimize (pop)
 
 unsigned char draw_step_sprites(unsigned char sprid) {
   unsigned char h3, h2, h1, h0;
