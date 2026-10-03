@@ -1,0 +1,187 @@
+% Build with slides/build.sh (upLaTeX + dvipdfmx).
+% Theme: hkaomua/slide-template at 3d26f4f. CPU evidence: 1756db3.
+\documentclass[dvipdfmx,aspectratio=169,t]{beamer}
+\usetheme{lineSeed}
+\usepackage{colortbl,array,amsmath,pgfplots,listings}
+\pgfplotsset{compat=1.18}
+\pdfstringdefDisableCommands{\def\translate#1{#1}}
+% Keep the upstream heading rule visible above table/plot content.
+\AddToHook{shipout/foreground}{%
+  \ifnum\value{page}>1\relax
+    \begin{tikzpicture}[remember picture,overlay]
+      \fill[SeedRule,rounded corners=0.850395bp]
+        ([xshift=36bp,yshift=-64.66732bp]current page.north west)
+        rectangle ([xshift=684bp,yshift=-66.36811bp]current page.north west);
+      \fill[SeedAccent,rounded corners=0.850395bp]
+        ([xshift=36bp,yshift=-64.66732bp]current page.north west)
+        rectangle ([xshift=87.02362bp,yshift=-66.36811bp]current page.north west);
+    \end{tikzpicture}%
+  \fi
+}
+\newcommand{\bigline}[1]{{\fontsize{24bp}{32bp}\selectfont\bfseries #1\par}}
+\newcommand{\intent}[1]{\noindent{\bfseries #1\par}\vspace{8bp}}
+\newcommand{\gap}{\par\vspace{8bp}}
+\newcommand{\smallbody}{\fontsize{14bp}{21bp}\selectfont}
+\newenvironment{datatable}{\begingroup\fontsize{16bp}{24bp}\selectfont\renewcommand{\arraystretch}{1.18}\setlength{\tabcolsep}{6bp}}{\endgroup}
+\newcommand{\headerline}{\arrayrulecolor{SeedAccent}\hline\arrayrulecolor{SeedRule}}
+\lstset{basicstyle=\ttfamily\fontsize{14bp}{21bp}\selectfont,columns=fullflexible,keepspaces=true,showstringspaces=false,breaklines=true,frame=none,aboveskip=4bp,belowskip=4bp}
+\title{Nescity CPUの高速化}
+\author{あすた}
+\filename{MICSCUP\_2026\_Asta}
+\hypersetup{pdftitle={Nescity CPUの高速化 5分版},pdfauthor={あすた},pdfsubject={6502の計算サイクルを70.615倍改善したCPUシミュレーション評価},pdfkeywords={Nescity,CPU,6502,MICS}}
+\begin{document}
+% 01: 20 seconds
+\seedtitleframe[36]
+
+% 02: 35 seconds
+\begin{frame}{計算内容と課題}
+\intent{重なる25近傍の集計と、乗除算を繰り返している}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{0.60\textwidth}
+32列 $\times$ 30行、合計960セル\par
+各セルの次世代を5 $\times$ 5近傍から計算\par
+\gap
+上下左右は反対側につながる。\par
+全セルは更新前の盤面を参照する。\par
+\gap
+\textbf{RAMは2 KiB、PRG ROMは32 KiB}\par
+6502で、集計と平均の計算を軽くしたい。
+\end{column}
+\begin{column}{0.34\textwidth}
+\textbf{近傍の重み}\par\vspace{4bp}
+{\renewcommand{\arraystretch}{0.85}
+$\begin{bmatrix}1&2&3&2&1\\2&3&4&3&2\\3&4&5&4&3\\2&3&4&3&2\\1&2&3&2&1\end{bmatrix}$}\par
+\gap
+$w=5-|dx|-|dy|$\par
+重みの合計は65
+\end{column}
+\end{columns}
+\end{frame}
+
+% 03: 55 seconds
+\begin{frame}{最適化(1/2)}
+\intent{近傍の集計を再利用し、結果が決まるセルは省略する}
+\textbf{横へ1セル進むと、5列のうち4列が重なる}\par
+縦5セルを列ごとに集計し、新しく入る列だけ計算する。\par
+住宅数は行を進めるときにも再利用する。
+\gap
+\textbf{海と、周囲の住宅が2件未満の山は早期に判定}\par
+重い集計を省き、次に必要なセルまで先送りする。\par
+距離が5列未満なら再利用し、5列以上なら組み直す。
+\gap
+{\smallbody 更新前の値を保つため、次世代3行と旧先頭2行を保存する。\par
+計算を省略する条件は元の更新ルールから導いている。}
+\end{frame}
+
+% 04: 55 seconds
+\begin{frame}{最適化(2/2)}
+\intent{除算を表引きにし、6502の命令とメモリに合わせる}
+\begin{datatable}
+\begin{tabular}{@{}p{0.23\textwidth}p{0.66\textwidth}@{}}
+\textbf{対象} & \textbf{変更内容}\\\headerline
+平均・補正の除算 & /65・/20・/3をROM上の表引きに置換\\\hline
+列集計・アドレス & 値域に合う8 bit化とゼロページの利用\\\hline
+ループの管理 & 横位置をY、人口和の上位バイトをXに保持\\\hline
+行のコピー & 32バイト専用とし、8バイトずつ展開\\\hline
+\end{tabular}
+\end{datatable}
+\gap
+/65の表は0～6,500の全入力で、元の整数除算と一致。\par
+世代更新の主要15関数に汎用の乗除算・剰余呼出しなし。
+\end{frame}
+
+% 05: 40 seconds
+\begin{frame}{評価結果(1/2)}
+\intent{付属配置の1,280世代で、計算部分を約71倍に高速化}
+\begin{datatable}
+\begin{tabular}{@{}p{0.46\textwidth}r@{\hspace{16bp}}r@{}}
+ & \textbf{配布版} & \textbf{最適化後}\\\headerline
+平均サイクル数／世代 & 42,361,551 & \textcolor{SeedAccent}{\bfseries 599,899}\\\hline
+配布版に対する速度 & 1.000倍 & \textcolor{SeedAccent}{\bfseries 70.615倍}\\\hline
+\end{tabular}
+\end{datatable}
+\gap
+実ROMの\texttt{sim\_step}をCPUシミュレータで計測。\par
+CRC・描画・フレーム待ち・NMIは含めない。
+\gap
+\textbf{実機FPSは未測定。速度倍率は盤面に依存する。}\par
+{\smallbody 初期5世代の平均は997,556サイクル、配布版比41.686倍。}
+\end{frame}
+
+% 06: 45 seconds
+\begin{frame}{評価結果(2/2)}
+\intent{ROMを使って高速化し、2 KiBのRAM枠に収める}
+\begin{datatable}
+\begin{tabular}{@{}p{0.47\textwidth}r@{\hspace{16bp}}r@{}}
+\textbf{使用量・余裕} & \textbf{配布版} & \textbf{最適化後}\\\headerline
+PRG ROM（32,768 B枠） & 13,155 B & 20,702 B\\\hline
+ゼロページ（256 B枠） & 60 B & 229 B\\\hline
+DATA + BSS & 1,258 B & 1,208 B\\\hline
+Cスタックと静的データの最小余裕 & 10 B & \textcolor{SeedAccent}{\bfseries 60 B}\\\hline
+\end{tabular}
+\end{datatable}
+\gap
+カートリッジRAMは使わず、内部RAMだけで動かす。\par
+{\smallbody ゼロページは内部RAMの一部。スタックの余裕は検証時の観測値。\par
+通常BSSの末尾からRAM上限までは72 Bで、スタックとの余裕とは異なる。}
+\end{frame}
+
+% 07: 50 seconds
+\begin{frame}{検証結果}
+\intent{1,280世代の全セルが参照Cモデルと一致}
+\begin{itemize}\setlength{\itemsep}{4bp}
+\item 初期状態を含む\textbf{1,281盤面・全960セル}で一致
+\item 追加279配置を各2世代、周期境界や早期判定も検証
+\item /65の6,501入力と、補正の表を全数照合
+\end{itemize}
+\gap
+{\smallbody 起動・NMI・CRC・5世代の再描画を簡易PPUで確認。\par
+CPU版の実機動作・実機FPSは未検証。}
+\gap
+\textbf{実装はこちら}\hspace{10bp}{\smallbody PR\#5が今回の実装差分です}\par
+\href{https://github.com/hkaomua/MICS_CUP_2026-public/pull/5}{\textcolor{SeedAccent}{\texttt{github.com/hkaomua/MICS\_CUP\_2026-public/pull/5}}}
+\end{frame}
+
+\appendix
+\begin{frame}{付録：最適化の経過}
+\intent{集計の再利用と6502向けの実装を段階的に追加}
+\begin{tikzpicture}
+\begin{axis}[
+width=0.78\textwidth,height=190bp,xbar,bar width=12bp,
+xmin=0,xmax=85,xtick={0,20,40,60,80},
+ytick={1,2,3,4,5,6,7},
+yticklabels={配布版,ROM表とゼロページ,列の再利用と除算,6502向けの実装,山の早期判定,住宅数と集計の省略,ループとレジスタ},
+y dir=reverse,ymin=0.4,ymax=7.6,
+axis x line*=bottom,axis y line*=left,axis line style={SeedRule},
+xmajorgrids=true,grid style={SeedRule!40},tick style={draw=none},
+xlabel={配布版に対する速度倍率},
+tick label style={font=\fontsize{12bp}{18bp}\selectfont},xlabel style={font=\fontsize{14bp}{21bp}\selectfont},
+nodes near coords,point meta=explicit symbolic,every node near coord/.append style={font=\fontsize{12bp}{18bp}\selectfont,anchor=west,color=black},
+]
+\addplot[fill=SeedAccent,draw=none] coordinates {
+(1,1) [1.000倍] (5.216,2) [5.216倍] (11.668,3) [11.668倍]
+(51.805,4) [51.805倍] (56.989,5) [56.989倍]
+(65.068,6) [65.068倍] (70.615,7) [70.615倍]};
+\end{axis}
+\end{tikzpicture}
+\par
+{\smallbody 各段階は複数の変更を含む。棒の差は単独手法の寄与率ではない。}
+\end{frame}
+
+\begin{frame}{付録：処理時間の内訳}
+\intent{最適化後も、列の集計が計算時間の約半分を占める}
+\begin{datatable}
+\begin{tabular}{@{}p{0.65\textwidth}r@{}}
+\textbf{処理} & \textbf{サイクル比率}\\\headerline
+列の集計 & \textcolor{SeedAccent}{\bfseries 51.60\%}\\\hline
+セルの更新 & 21.24\%\\\hline
+行ループ & 14.50\%\\\hline
+住宅数の行送り & 5.46\%\\\hline
+固定長コピー & 2.20\%\\\hline
+その他 & 5.00\%\\\hline
+\end{tabular}
+\end{datatable}
+\gap
+{\smallbody 関数自身で実行したサイクルの内訳。呼出し先との二重計上はしない。}
+\end{frame}
+\end{document}
